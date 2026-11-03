@@ -1,0 +1,5 @@
+pymem>=1.14
+pillow>=10.0
+comtypes>=1.4
+# build only
+pyinstaller>=6.0

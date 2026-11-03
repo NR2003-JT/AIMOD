@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+
+# Build outputs (build.cmd -> build\dist\AIMOD.exe); the spec in build\release is kept
+/build/dist/
+/build/work/
+
+# Running copy, release staging and anything a race leaves behind
+/app/
+/release/
+/beta/
+/logs/
+*.log
+*.log.*
+settings.json
+tire_models*.json
+pitlog_*.csv
+
+# Voices (downloaded by the user) and per-season car art (not ours to redistribute; ships in release zips)
+voices/
+*.onnx
+*.onnx.json
+art/series/
+
+# Local beta switch: never published
+beta.txt
+
+# Duplicate presets
+presets/* - Copy.json
+presets/*copy*.json
+
+# Local notes for Claude Code (personal paths)
+CLAUDE.md
