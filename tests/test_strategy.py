@@ -1299,7 +1299,10 @@ class PitRoadFlagGapTests(unittest.TestCase):
                           laps_done=40, damage=damage, game_condition=cond, controlled=controlled)], flag=CAUTION)
             r.session_time = t
             res = eng.tick(r, p)
-            out.append(any(w.offset == mm.OFF_REPAIR_FLAG and w.value == 1 for w in res.writes))
+            flag = any(w.offset == mm.OFF_REPAIR_FLAG and w.value == 1 for w in res.writes)
+            plan = any(w.offset == mm.OFF_PLAN_REPAIR and w.value == 1 for w in res.writes)
+            self.assertEqual(flag, plan)              # the planner copies the flag from the plan byte: set both
+            out.append(flag)
         return out, eng
 
     def test_damaged_car_gets_the_repair_flag_on_pit_road_before_its_box(self):
@@ -1315,6 +1318,30 @@ class PitRoadFlagGapTests(unittest.TestCase):
         self.assertEqual(self.repair_writes(0.1, steps)[0], [False, False])
         self.assertEqual(self.repair_writes(0.9, steps, controlled=False)[0], [False, False])
         self.assertEqual(self.repair_writes(0.0, steps, cond=0.6)[0], [False, True])   # car condition counts
+
+    def test_no_pit_request_rewritten_on_pit_road(self):
+        # #98 Bristol 11-02: AIMOD rewrote +8118=1 every caution tick; the write from a snapshot taken just before the
+        # game cleared it at the end of service put it back - the car left its box still called in and pitted again
+        eng = StrategyEngine(random.Random(1))
+        st = eng.state(0)
+        st.planned_lap = GAME_DECIDE
+        p = StrategyParams(tank_laps=160)
+        eng.race_started = True
+        eng.caution_wall = -1e9
+        seq = [(5, 0, False, 0.0, 30, 50), (10, 1, False, 0.0, 30, 100), (12, 1, True, 0.0, 20, 150),
+               (20, 1, True, 5.0, 0.0, 200), (30, 1, True, 13.6, 0.0, 200), (31, 0, True, 13.6, 0.0, 200),
+               (33, 0, True, 13.6, 15, 300), (40, 0, False, 13.6, 30, 600), (60, 0, False, 13.6, 30, 1200)]
+        events, on_road_ones = [], []
+        for t, pit, road, timer, spd, dist in seq:
+            r = race([car(0, pitting=pit, on_pit_road=road, pit_timer=timer, speed=spd, lap_dist=dist,
+                          laps_done=40, damage=1.028)], flag=CAUTION)          # a damage call, like #98's
+            r.session_time = t
+            res = eng.tick(r, p)
+            events += res.events
+            if road and t >= 20:                                        # from the box on
+                on_road_ones += [w for w in res.writes if w.offset == mm.OFF_PITTING and w.value == 1]
+        self.assertEqual(on_road_ones, [])
+        self.assertEqual(len(events), 1)
 
     def test_unrequested_stop_after_leaving_pit_road_still_counts(self):
         eng = StrategyEngine(random.Random(1))
@@ -2407,6 +2434,23 @@ class Phase3CautionTireTests(unittest.TestCase):
             svc, why = eng.caution_service(c, st, CarInfo(rank, 0, 0, 1.0, 0.3), to_go, p, FOUR_TIRES, tank)
             out[svc] += 1
         return out
+
+    def test_short_track_full_car_isnt_pulled_in_for_fuel(self):
+        # #40 Bristol 2026-11-02: leading with 152 of 169 laps of fuel, 294 to go, "can't reach the finish" -> pitted
+        # under every caution. Only a fill that reaches the finish / saves a green stop, or a low tank, is a must.
+        from aimod.strategy import SHORT_TRACK
+        eng = StrategyEngine(random.Random(1))
+        eng.lap_now, eng.cautions = 206, 7                                    # a yellow every ~30 laps
+        st = eng.state(0)
+        p = StrategyParams(tank_laps=169, track_type=SHORT_TRACK)
+        me = CarInfo(1, 0, 0, 1.0, 0.3)
+        pit, note, must = eng.caution_fuel_call(st, 152, 294, p, me)
+        self.assertFalse(must)
+        self.assertNotIn("can't reach", note)
+        pit, note, must = eng.caution_fuel_call(st, 40, 294, p, me)          # won't last to the next likely yellow
+        self.assertTrue(pit and must)
+        pit, note, must = eng.caution_fuel_call(st, 152, 160, p, me)         # a fill now makes the finish
+        self.assertTrue(pit and must)
 
     def test_short_track_four_tires_early_gambles_late(self):
         from aimod.strategy import SHORT_TRACK

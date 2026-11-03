@@ -1419,10 +1419,16 @@ class StrategyEngine:
                 return True, f"fuel ({full:.0%} of a tank left)", True
             return None, "", False
         need = self.laps_to_next_chance(to_go)
-        # a green stop costs most at short tracks (laps) and road courses (long pit lane): take the caution
-        # stop unless nearly full
+        # a car that can't reach the finish only has to take the caution stop for fuel when the fuel won't last to the
+        # next likely caution (1.5 x the race's average laps between yellows so far) - else it would stop under
+        # green. Never above the old caps (a green stop costs most at short tracks and road courses). Filling up for
+        # the finish or to save a green stop are their own checks below. (A flat 0.9 of a tank at short tracks pulled
+        # the whole field in under every yellow of a 500-lap race - #40, Bristol 2026-11-02, leading with 90 % fuel
+        # and good tires, six caution stops in 170 laps, cautions every ~30 laps.)
         full_enough = {SHORT_TRACK: 0.9, ROAD_COURSE: 0.75}.get(p.track_type, 0.5)
-        if fuel_left - p.fuel_margin < need and fuel_left <= full_enough * tank:
+        gap = self.lap_now / max(1, self.cautions) if self.lap_now > 0 else tank
+        soon = clamp(1.5 * gap, 0.25 * tank, full_enough * tank)
+        if fuel_left - p.fuel_margin < need and fuel_left <= soon:
             # it would have to stop under green soon after the restart: take the stop now
             where = "stage break" if self.next_stage_end() is not None else "finish"
             return True, f"fuel: {fuel_left:.0f} laps left, can't reach the {where}", True
@@ -2201,7 +2207,18 @@ class StrategyEngine:
                                                 total, to_go, wall, dt, res, grip_ref, common))
                 continue
 
+            still_in_box = (car.on_pit_road is True and car.speed is not None and car.speed < STALL_SPEED
+                            and st.event is not None)
+
             def pit_flag(v):
+                if v and car.on_pit_road is True and (st.exit_wait or still_in_box or (
+                        st.event is not None and st.event.t_box_in is not None)):
+                    # once it has stopped in its box the stop is the game's: it clears the request when the service
+                    # ends. Writing 1 then (from a snapshot read just before that) put it straight back, AIMOD never saw
+                    # the stop end and the car left its box still called in - and pitted again (#98, Bristol 11-02:
+                    # repaired lap 42, back in on lap 44 for nothing, out after the green). (Before the box AIMOD may
+                    # still write it: taking over a stop the game sent down pit road without a request.)
+                    return
                 res.writes.append(Write(i, mm.OFF_PITTING, v))
 
             pitting = car.pitting
@@ -2509,6 +2526,7 @@ class StrategyEngine:
                     and (car.damage >= REPAIR_MIN or car.game_condition >= REPAIR_MIN)):
                 # on pit road, not in its box yet: tell the crew to fix the damage. Under caution the game clears
                 # this flag at pit entry, so caution stops never repaired and the game kept calling the car back in
+                res.writes.append(Write(i, mm.OFF_PLAN_REPAIR, 1))      # (the planner copies the flag from here)
                 res.writes.append(Write(i, mm.OFF_REPAIR_FLAG, 1))
                 if st.event is not None and not st.event.damage:
                     st.event.damage = True
@@ -2663,8 +2681,8 @@ class StrategyEngine:
             elif st.event is None and race and pitting == 0 and lap_now >= 1 and to_go > 0:
                 self.unrequested_stop(car, st, green, car_lap, lap_now, rank, wall, res)
 
-            if pitting == 1 and st.post_stop_lock:
-                st.post_stop_lock = False
+            if pitting == 1 and st.post_stop_lock and car.on_pit_road is not True:
+                st.post_stop_lock = False        # (a request seen while still on pit road after the stop isn't a new call)
             if st.urgency > 100:
                 st.urgency = 100
 

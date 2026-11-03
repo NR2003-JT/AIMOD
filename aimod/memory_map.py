@@ -134,6 +134,11 @@ OFF_SIDE_FLAG = OFF_PIT + 254
 # calling damaged cars back in. Set again after pit entry, a caution stop repairs (#31: 0.865 -> 0.451 with 4 tires
 # and fuel). The crew clears it when the repair is done.
 OFF_REPAIR_FLAG = OFF_PIT + 286
+# The AI's pit service planner 0x40B740 (reached through a pointer table) rewrites the whole request - tires, fuel and
+# the repair flag - from the car's stop plan: the repair flag from the byte at car +0x1DD3 (read nowhere else in the
+# exe). With it 0 the planner wiped AIMOD's flag again within a frame (Bristol 11-02, new18: 14 of 20 damaged caution
+# stops not repaired, the flag flipping 1 -> 0 every 30 ms on pit road). AIMOD sets both.
+OFF_PLAN_REPAIR = 0x1DD3
 FUEL_FULL = 5
 
 # Driver entries (names / car numbers)
