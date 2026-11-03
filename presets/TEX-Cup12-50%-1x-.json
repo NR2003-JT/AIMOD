@@ -1,0 +1,25 @@
+{
+    "format": "AIMOD v2",
+    "wear_r": 0.26,
+    "wear_l": 0.325,
+    "urgency_factor": 1300.0,
+    "damage_threshold": 0.5,
+    "tank_laps": 66.0,
+    "tank_source": "manual",
+    "max_tire_sets": 3,
+    "sets_include_start": false,
+    "fuel_margin": 2.0,
+    "plan_margin": 5.0,
+    "dispersion_divisor": 5.0,
+    "plan_multi_stop": true,
+    "tracks": [
+        "Texas Motor_Speedway_2012"
+    ],
+    "notes": "",
+    "UMBRAL_WEAR_R": 0.26,
+    "UMBRAL_WEAR_L": 0.325,
+    "FACTOR_URGENCIA": 1300.0,
+    "UMBRAL_DANIO": 0.5,
+    "TANQUE_MANUAL_VALOR": 66.0,
+    "MAX_TIRE_SETS": 3
+}

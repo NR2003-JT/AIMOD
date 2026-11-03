@@ -1,0 +1,8 @@
+{
+    "UMBRAL_WEAR_R": 0.293,
+    "UMBRAL_WEAR_L": 0.336,
+    "FACTOR_URGENCIA": 1250.0,
+    "UMBRAL_DANIO": 0.5,
+    "MAX_TIRE_SETS": 3,
+    "TANQUE_MANUAL_VALOR": 61.0
+}

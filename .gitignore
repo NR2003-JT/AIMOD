@@ -32,3 +32,6 @@ presets/*copy*.json
 
 # Local notes for Claude Code (personal paths)
 CLAUDE.md
+
+# Claude edit backups
+*.before-claude-*
