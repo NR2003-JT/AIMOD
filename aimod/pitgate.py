@@ -24,8 +24,11 @@ Otherwise the change is refused (the car keeps its current mode and stays on tra
 Modes on pit road itself (0x760F54 / 0x760F90), limp, tow and repair modes are never touched, so a car can't be
 trapped on pit road or in its stall.
 
-Armed by a deadline in game ticks that AIMOD moves forward every tick during a race: if AIMOD closes or hangs, the
-gate opens by itself within a minute of game time and NR2003 runs its stock pit logic again.
+Armed by a window in game ticks that AIMOD moves forward every tick during a race: refused only while
+armed_from <= ticks < deadline. If AIMOD closes or hangs, the gate opens by itself within a minute of game time and
+NR2003 runs its stock pit logic again. The lower bound matters when the game's tick counter restarts (new or
+restarted session): a deadline left by an AIMOD that died late in a race would otherwise keep the gate closed in
+the next session for as long as the old one had run (v2 only had the deadline).
 """
 from __future__ import annotations
 
@@ -43,17 +46,18 @@ HOOK_ORIG = bytes.fromhex("568bf1578b7c240c")   # push esi / mov esi,ecx / push 
 HOOK_RESUME = HOOK_SITE + len(HOOK_ORIG)       # 0x52A1B8, an instruction boundary in both versions
 GATED_MODES = (0x760F48, 0x760D94, 0x760F78)    # "head for pit road" (caution / green variants)
 
-MAGIC = b"AIMGATE2"
-OLD_CAVES = ((b"AIMGATE1", 0x140),)   # earlier gate versions (magic, code offset): replaced on install
+MAGIC = b"AIMGATE3"
+OLD_CAVES = ((b"AIMGATE2", 0x180), (b"AIMGATE1", 0x140))   # earlier gate versions (magic, code offset): replaced
 CAVE_SIZE = 0x400
-OFF_DEADLINE = 0x08          # dword: armed while the game's tick counter is below this
+OFF_DEADLINE = 0x08          # dword: armed while the game's tick counter is below this ...
 OFF_TOTAL = 0x0C             # dword: changes refused so far
 OFF_VERSION = 0x10
+OFF_ARMED_FROM = 0x14        # dword: ... and not below this (the tick it was last armed at)
 OFF_COUNTS = 0x20            # 64 dwords: changes refused per car slot
 OFF_ALLOW = 0x120            # 64 bytes: 1 = AIMOD lets this car head for pit road (written every tick)
 OFF_CODE = 0x180
 MAX_SLOTS = 64
-VERSION = 2
+VERSION = 3
 
 ON_PIT_ROAD = mm.ON_PIT_ROAD
 
@@ -85,7 +89,9 @@ def build_code(cave: int) -> bytes:
     emit(b"\xa1" + d32(mm.GAME_TICKS))                       # mov eax,[ticks]
     emit(b"\x3b\x05" + d32(cave + OFF_DEADLINE))             # cmp eax,[deadline]
     jcc(b"\x0f\x83", "orig")                                 # jae orig             not armed
-    emit(b"\x81\xf9" + d32(first_ai))                        # cmp ecx, first AI car
+    emit(b"\x3b\x05" + d32(cave + OFF_ARMED_FROM))           # cmp eax,[armed_from]
+    jcc(b"\x0f\x82", "orig")                                 # jb orig              tick counter restarted
+    emit(b"\x81\xf9" + d32(first_ai))                      # cmp ecx, first AI car
     jcc(b"\x0f\x82", "orig")                                 # jb orig              player / pace car
     emit(b"\x81\xf9" + d32(past_last))                       # cmp ecx, past the last slot
     jcc(b"\x0f\x83", "orig")                                 # jae orig
@@ -191,7 +197,7 @@ class PitGate:
                 log.warning(self.status)
                 return False
             cave = pm.allocate(CAVE_SIZE)
-            header = MAGIC + struct.pack("<III", 0, 0, VERSION)
+            header = MAGIC + struct.pack("<IIII", 0, 0, VERSION, 0)     # deadline, total, version, armed_from
             pm.write_bytes(cave, header, len(header))
             pm.write_bytes(cave + OFF_COUNTS, b"\0" * (4 * MAX_SLOTS), 4 * MAX_SLOTS)
             pm.write_bytes(cave + OFF_ALLOW, b"\0" * MAX_SLOTS, MAX_SLOTS)
@@ -241,6 +247,8 @@ class PitGate:
                 rate = 36
             if ticks < 0:
                 return False
+            # lower bound first: a counter that restarts below it opens the gate even if AIMOD never writes again
+            pm.write_bytes(self.cave + OFF_ARMED_FROM, struct.pack("<I", ticks), 4)
             pm.write_bytes(self.cave + OFF_DEADLINE, struct.pack("<I", ticks + int(rate * game_seconds)), 4)
             return True
         except Exception as e:

@@ -31,6 +31,8 @@ import statistics
 import zlib
 from dataclasses import dataclass, field
 
+from .carno import CarNo
+
 NORMAL, SAVE_FUEL, SAVE_TIRES, COOL, PUSH = "", "SAVE FUEL", "SAVE TIRES", "COOL TIRES", "PUSH"
 MODES = (NORMAL, SAVE_FUEL, SAVE_TIRES, COOL, PUSH)
 SAVING = (SAVE_FUEL, SAVE_TIRES, COOL)
@@ -436,17 +438,17 @@ class BehaviorEngine:
             if (ahead is not None and gap_a is not None and gap_a <= BATTLE_GAP and rivals(c, ahead)
                     and ahead.laps_down == 0):
                 if n == 1:
-                    return self._t(PUSH, "racing #%d for the lead" % ahead.number, "lead_attack", ahead.number)
-                return self._t(PUSH, "racing #%d, top 3" % ahead.number, "top3_attack", ahead.number)
+                    return self._t(PUSH, "racing #%s for the lead" % ahead.number, "lead_attack", ahead.number)
+                return self._t(PUSH, "racing #%s, top 3" % ahead.number, "top3_attack", ahead.number)
             if (n <= 1 and behind is not None and gap_b is not None and gap_b <= BATTLE_GAP
                     and rivals(c, behind) and behind.laps_down == 0):
                 if n == 0:
-                    return self._t(PUSH, "defending the lead from #%d" % behind.number, "lead_defend", behind.number)
-                return self._t(PUSH, "holding #%d off, top 3" % behind.number, "top3_defend", behind.number)
+                    return self._t(PUSH, "defending the lead from #%s" % behind.number, "lead_defend", behind.number)
+                return self._t(PUSH, "holding #%s off, top 3" % behind.number, "top3_defend", behind.number)
         lead = order[0] if order else None
         if (lead is not None and lead is not c and c.laps_down == 0 and not self._teammates(c, lead)
                 and 0 < (c.progress + 1.0 - lead.progress) * lt <= LAPPING_GAP):
-            return self._t(PUSH, "holding off the leader #%d to stay on the lead lap" % lead.number, "lapping",
+            return self._t(PUSH, "holding off the leader #%s to stay on the lead lap" % lead.number, "lapping",
                            lead.number)
         return None
 
@@ -554,7 +556,7 @@ def gather(engine, res, snap, p, track_type: str | None = None) -> tuple[Ctx, li
         else:
             left = r.fuel_laps
         on_track = (r.kind == "green" and not sc.on_pit_road and not sc.pitting and not sc.reason_out)
-        cars.append(Car(r.idx, int(r.number), r.name, make=r.make, team=r.team, rating=r.rating, lap=car_lap,
+        cars.append(Car(r.idx, CarNo(r.number), r.name, make=r.make, team=r.team, rating=r.rating, lap=car_lap,
                         laps_down=r.laps_down, progress=progress, on_track=on_track, fuel_laps=r.fuel_laps,
                         fuel_margin=r.fuel_margin, laps_in_run=left, stint_laps=max(0, car_lap - last_stop),
                         run_id=last_stop, falloff=r.falloff, pace_delta=r.pace_delta, waits_for_stage=waits,

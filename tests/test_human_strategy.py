@@ -252,7 +252,11 @@ class HumanPlanSimTests(unittest.TestCase):
         with mock.patch("aimod.strategy.time.time", return_value=1_000_000.0):
             sim.run()
         self.assertEqual(sum(c.out_of_fuel for c in sim.cars), 0)
-        self.assertTrue(all(not c.road for c in sim.cars))
+        # a phone plan may send a lapped car in on the last lap: let stops under way finish (the run ends the
+        # moment the leader takes the checker), then nobody may be left on pit road
+        for _ in range(int(2 * sim.t.pit_road_s / sim.dt) + 1):
+            sim.step()
+        self.assertTrue(all(not c.road for c in sim.cars), [(c.number, c.stops) for c in sim.cars if c.road])
         for c in sim.cars:
             laps = sorted(lap for lap, g, code in c.stops)
             for k in range(1, len(laps)):

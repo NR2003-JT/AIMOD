@@ -75,6 +75,17 @@ class PitCrewTests(unittest.TestCase):
         target = struct.unpack("<I", new.read_bytes(pc.FUEL_SITES[0][0] + 2, 4))[0]
         self.assertGreaterEqual(target, 0x20000000)
 
+    def test_new_nr2003_process_gets_its_own_lug_lists(self):
+        # same 998 as the fuel block: the one-lug step lists were written to the old game's cave address
+        crew = pc.PitCrew()
+        old = FakePM()
+        self.assertTrue(crew.apply(old, True))
+        new = FakePM()
+        new.process_id, new.next = 2, 0x20000000
+        self.assertTrue(crew.apply(new, True))
+        self.assertEqual(crew.lugs(new), 1)
+        self.assertGreaterEqual(new.read_uint(pc.TASK_TABLE + 4 * 33), 0x20000000)
+
     def test_lug_change_waits_for_clear_pit_road(self):
         pm, crew = FakePM(), pc.PitCrew()
         self.assertFalse(crew.apply(pm, True, cars_on_pit_road=True))

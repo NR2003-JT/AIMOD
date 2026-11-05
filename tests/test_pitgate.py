@@ -218,6 +218,24 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(pm.read_bytes(pg.HOOK_SITE, 8), pg.hook_bytes(g.cave))
         self.assertEqual(pm.read_uint(old + pg.OFF_DEADLINE), 0, "old gate opened")
 
+    def test_a_v2_gate_in_the_running_game_is_replaced(self):
+        old = 0x20000000                                   # a v2 cave: magic at code - 0x180
+        pm = FakePM()
+        pm.write_bytes(old, b"AIMGATE2" + struct.pack("<I", 999999), 12)
+        hook = b"\xe9" + struct.pack("<i", old + 0x180 - (pg.HOOK_SITE + 5)) + b"\x90" * 3
+        pm.write_bytes(pg.HOOK_SITE, hook, 8)
+        g = pg.PitGate()
+        self.assertTrue(g.install(pm))
+        self.assertNotEqual(g.cave, old)
+        self.assertEqual(pm.read_bytes(pg.HOOK_SITE, 8), pg.hook_bytes(g.cave))
+        self.assertEqual(pm.read_uint(old + pg.OFF_DEADLINE), 0, "old gate opened")
+
+    def test_arm_records_the_tick_it_was_armed_at(self):
+        pm = FakePM()
+        g = pg.PitGate()
+        g.arm(pm)
+        self.assertEqual(pm.read_uint(g.cave + pg.OFF_ARMED_FROM), 5000)
+
     def test_set_allow_writes_one_byte_per_slot(self):
         pm = FakePM()
         g = pg.PitGate()
@@ -305,6 +323,16 @@ class CaveRunTests(unittest.TestCase):
         self.assertEqual(self.go(), "refused")
         self.pm.write_bytes(mm.GAME_TICKS, struct.pack("<i", 5000 + 36 * 60 + 1), 4)   # AIMOD stopped arming
         self.assertEqual(self.go(), "orig")
+
+    def test_tick_counter_restart_opens_it(self):
+        # AIMOD died late in a race (deadline far ahead), then the session restarted: the counter starts over
+        self.pm.write_bytes(mm.GAME_TICKS, struct.pack("<i", 400000), 4)
+        self.g.arm(self.pm)
+        self.assertEqual(self.go(), "refused")
+        self.pm.write_bytes(mm.GAME_TICKS, struct.pack("<i", 120), 4)
+        self.assertEqual(self.go(), "orig")
+        self.g.arm(self.pm)                                    # a live AIMOD arms the new session again
+        self.assertEqual(self.go(), "refused")
 
     def test_orig_path_runs_the_routines_first_instructions(self):
         names = [i.mnemonic for a, i in sorted(self.cpu.ins.items())][-5:]

@@ -23,9 +23,12 @@ import re
 import sys
 import time
 
+from .carno import CarNo, raw
+
 WAVE_RE = re.compile(r"lap (\d+) flag \d+: wave around[^:]*:(.*)")
 SUMMARY_RE = re.compile(r"lap (\d+) flag \d+: first time by summary - .*?waved:([^;]*)")
-FREE_PASS_RE = re.compile(r"lap (\d+) flag \d+: (?:first time by summary - )?free pass: #(\d+)")
+FREE_PASS_RE = re.compile(r"lap (\d+) flag \d+: (?:first time by summary - )?free pass: #(\d+)"
+                          r"(?!\d| did not get around)")     # (not the "lost its free pass" line)
 NUM_RE = re.compile(r"#(\d+)")
 AROUND_RE = re.compile(r"lap (\d+) flag \d+: waved #(\d+) goes to the end of the line")
 AROUND_DONE_RE = re.compile(r"flag \d+: (?:waved #(\d+) (?:crossed the line after passing the pace car|is pitting)"
@@ -86,17 +89,22 @@ def default_path() -> str:
     return default_paths()[0]
 
 
+def car(text: str) -> CarNo:
+    """A car number from a log line, as the int NR2003 stores ("#2001" and a painted "#01" are both 2001)."""
+    return CarNo(raw(text))
+
+
 def parse_line(line: str) -> tuple[int, list[int]] | None:
     m = SUMMARY_RE.search(line)
     if m:
-        return int(m.group(1)), [int(n) for n in NUM_RE.findall(m.group(2))]
+        return int(m.group(1)), [car(n) for n in NUM_RE.findall(m.group(2))]
     m = WAVE_RE.search(line)
     if not m:
         return None
     body = m.group(2).split("->")[0]
     if "stayed out" in body:                   # one car per line; later numbers are lead-lap cars it passed
         body = body.split("stayed out")[0]
-    return int(m.group(1)), [int(n) for n in NUM_RE.findall(body)]
+    return int(m.group(1)), [car(n) for n in NUM_RE.findall(body)]
 
 
 class WaveLog:
@@ -155,16 +163,16 @@ class WaveLog:
         for line in text.splitlines():
             ar = AROUND_RE.search(line)
             if ar:
-                self.around[int(ar.group(2))] = int(ar.group(1))
+                self.around[car(ar.group(2))] = int(ar.group(1))
             else:
                 done = AROUND_DONE_RE.search(line)
                 if done:
-                    self.around.pop(int(next(g for g in done.groups() if g)), None)
+                    self.around.pop(car(next(g for g in done.groups() if g)), None)
                 elif GREEN_RE.search(line):
                     self.around.clear()                # green: nobody is going around any more
             fp = FREE_PASS_RE.search(line)
             if fp:
-                lap, number = int(fp.group(1)), int(fp.group(2))
+                lap, number = int(fp.group(1)), car(fp.group(2))
                 if self.free_pass.get(number) != lap:
                     self.new_free_pass.append((lap, number))
                 self.free_pass[number] = lap

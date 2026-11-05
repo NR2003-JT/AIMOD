@@ -1166,6 +1166,22 @@ class TireModelTests(unittest.TestCase):
                 m.add_run(0.08, 20, practice=True)               # 4x faster falloff: other physics/tires
             self.assertGreater(m.slope, 0.06)
 
+    def test_track_change_keeps_the_old_tracks_open_runs_on_the_old_track(self):
+        # app._check_track: hand_off_runs() -> model.use(new track) -> clear_session -> engine.reset()
+        with tempfile.TemporaryDirectory() as d:
+            m = self.model(d)
+            m.use("mod", "Bristol")
+            eng = StrategyEngine(random.Random(1), tire_model=m)
+            for n in range(2, 14):                               # an open 12-lap run at a 15 s lap
+                eng.pace.lap(3, 0, n, 15.0 + 0.05 * n, True, 0.9, 0.9, 15.0)
+            eng.hand_off_runs()
+            m.use("mod", "Charlotte")
+            eng.reset()
+            self.assertEqual(m.runs, [], "Bristol's run is not learned as Charlotte's")
+            bristol = self.model(d)
+            bristol.use("mod", "Bristol")
+            self.assertGreaterEqual(bristol.prior.get("runs", 0), 1, "saved under Bristol")
+
     def test_service_classes(self):
         from aimod.tiremodel import service_class
         self.assertEqual([service_class(c) for c in ("F", "F+R", "L/R", "F+L/R", "D+F+L/R")],
@@ -2885,6 +2901,42 @@ class FreePassTests(unittest.TestCase):
             self.assertTrue(w.is_free_pass(47, 88))
             self.assertFalse(w.is_waved(47, 88))
             self.assertEqual(w.new_free_pass, [(87, 47)])
+
+    def test_lost_free_pass_line_does_not_tag_it_again(self):
+        from aimod.wavelog import WaveLog
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "race_control.log")
+            open(path, "w").close()
+            w = WaveLog(path)
+            w.poll()
+            with open(path, "a") as f:
+                f.write("14:29:40 lap 87 flag 2: free pass: #47 (1.21 laps behind the leader, the first car one lap "
+                        "down) goes around the pace car to get its lap back\n")
+                f.write("14:30:30 lap 88 flag 2: free pass: #47 did not get around the pace car in 45 s: it drops "
+                        "to the tail and its lap is credited at the green\n")
+            w.poll()
+            self.assertEqual(w.new_free_pass, [(87, 47)], "no second FREE PASS from the failure line")
+            self.assertEqual(w.free_pass[47], 87)
+            self.assertFalse(w.is_going_around(47, 88))
+
+    def test_leading_zero_numbers_match_the_stored_car(self):
+        # NR2003 stores "01" as 2001; Race Control logs the stored number, a painted "#01" must match it too
+        from aimod.wavelog import WaveLog, parse_line
+        self.assertEqual(parse_line("lap 52 flag 5: wave around (laps behind the leader): #01(1.93) #2000(1.94) "
+                                    "#1(2.1) -> tail of the field"), (52, [2001, 2000, 1]))
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "race_control.log")
+            open(path, "w").close()
+            w = WaveLog(path)
+            w.poll()
+            with open(path, "a") as f:
+                f.write("lap 87 flag 2: free pass: #01 (1.21 laps behind the leader) goes around the pace car\n")
+                f.write("lap 87 flag 2: waved #007 goes to the end of the line until it has passed the pace car\n")
+            w.poll()
+            self.assertTrue(w.is_free_pass(2001, 88))
+            self.assertFalse(w.is_free_pass(1, 88))
+            self.assertTrue(w.is_going_around(3007, 87))
+            self.assertEqual(f"#{w.new_free_pass[0][1]}", "#01")
 
     def test_free_pass_car_called_like_a_lead_lap_car(self):
         eng, st, infos, snap = WaveAroundTests().setup(car_frac=0.3)      # lapped, in line for a wave

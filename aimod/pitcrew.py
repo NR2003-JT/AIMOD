@@ -62,7 +62,7 @@ def default_modern(mod: str) -> bool:
 
 class PitCrew:
     def __init__(self):
-        self._cave: int | None = None        # our copy of the one-lug step lists (reused)
+        self._cave: tuple | None = None      # (NR2003 pid, address) of our one-lug step lists (reused)
         self._fuel_cave: tuple | None = None  # (NR2003 pid, address) of our scaled fuel-flow constants
         self.status = ""
 
@@ -184,9 +184,9 @@ class PitCrew:
             for task, stock in WHEEL_TASKS.items():
                 self._write(pm, TASK_TABLE + 4 * task, struct.pack("<I", stock))
             return
-        if self._cave is None:
-            self._cave = pm.allocate(4096)       # zero-filled: trailing zeros end each step list
-        at = self._cave
+        if self._cave is None or self._cave[0] != pm.process_id:     # (a restarted NR2003 needs its own)
+            self._cave = (pm.process_id, pm.allocate(4096))   # zero-filled: trailing zeros end each step list
+        at = self._cave[1]
         for task, stock in WHEEL_TASKS.items():
             kept, seen = [], {UNDO_NUT: 0, TIGHTEN_NUT: 0}
             for s in self._steps(pm, stock):

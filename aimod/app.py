@@ -1331,6 +1331,7 @@ class App:
                 self.pit_events.remove(ev)
             self._pit_dirty = True
             log.info("#%s %s: pit request withdrawn before pit road", ev.number, ev.name)
+        self.pitlog.retry()                      # rows held back while the CSV was locked (open in Excel)
         self._last_rows = res.rows
         try:
             tv = tv_slot(self.game.pm) if self.radio.scanner and self.radio.cfg.get("follow_tv") else None
@@ -1522,6 +1523,7 @@ class App:
             self.mod = mod
             self._crew_applied = None             # each mod has its own crew choice
             log.info("NR2003 series (mod): %s", mod)
+            self.engine.hand_off_runs()           # the last runs belong to the model still in use (old mod)
             self._use_tire_model()
             self._apply_art_choice()
             self._apply_make_names()
@@ -1533,6 +1535,7 @@ class App:
         self.btn_assign.state(["!disabled"])
         if track != self.track:
             self.track = track
+            self.engine.hand_off_runs()           # (before the switch: the old track's runs aren't the new one's)
             self._use_tire_model()
             log.info("Track detected (%s): %s", src, track)
             if self._last_session is not None:

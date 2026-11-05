@@ -35,9 +35,9 @@ def race_control_pits_closed() -> bool:
     try:
         if time.time() - os.path.getmtime(RACE_CONTROL_STATE) > 3:
             return False
-        with open(RACE_CONTROL_STATE, encoding="utf-8") as f:
+        with open(RACE_CONTROL_STATE, encoding="utf-8", errors="replace") as f:
             return "pits_closed=1" in f.read()
-    except OSError:
+    except (OSError, ValueError):        # (another app's file: never let it break the snapshot)
         return False
 
 def race_control_stage_ends() -> tuple[int, ...] | None:
@@ -46,7 +46,7 @@ def race_control_stage_ends() -> tuple[int, ...] | None:
     try:
         if time.time() - os.path.getmtime(RACE_CONTROL_STATE) > 10:
             return None
-        with open(RACE_CONTROL_STATE, encoding="utf-8") as f:
+        with open(RACE_CONTROL_STATE, encoding="utf-8", errors="replace") as f:
             for line in f:
                 if line.startswith("stage_ends="):
                     return tuple(int(v) for v in line.split("=", 1)[1].strip().replace(" ", "").split(",") if v.isdigit())
@@ -62,12 +62,12 @@ def race_control_wave_around() -> bool | None:
     try:
         if time.time() - os.path.getmtime(RACE_CONTROL_STATE) > 10:
             return None
-        with open(RACE_CONTROL_STATE, encoding="utf-8") as f:
+        with open(RACE_CONTROL_STATE, encoding="utf-8", errors="replace") as f:
             for line in f:
                 if line.startswith("wave_around="):
                     return line.split("=", 1)[1].strip() == "1"
         return True
-    except OSError:
+    except (OSError, ValueError):
         return None
 
 
@@ -258,17 +258,17 @@ class Game:
                 continue
             damage = (f(mm.OFF_DAMAGE_FRONT) + f(mm.OFF_DAMAGE_REAR)
                       + f(mm.OFF_DAMAGE_LEFT) + f(mm.OFF_DAMAGE_RIGHT))
-            laps_done = struct.unpack_from("<i", buf, mm.OFF_LAPS_DONE)[0]
+            car_laps = struct.unpack_from("<i", buf, mm.OFF_LAPS_DONE)[0]    # (not laps_done: that's the race's)
             dist = f(mm.OFF_LAP_DIST)
             vel = (f(mm.OFF_VEL_X), f(mm.OFF_VEL_X + 4))
             pos = (f(mm.OFF_POS_X), f(mm.OFF_POS_X + 4))
             speed = (vel[0] ** 2 + vel[1] ** 2) ** 0.5
             fuel, cap = self._fuel(buf, i)
             cross = prev_cross = None
-            if table and 1 <= laps_done < laps_cap and i < 48:
+            if table and 1 <= car_laps < laps_cap and i < 48:
                 try:
                     prev_cross, cross = (v & mm.CROSS_MASK for v in struct.unpack(
-                        "<II", pm.read_bytes(table + (i << (shift + 2)) + (laps_done - 1) * 4, 8)))
+                        "<II", pm.read_bytes(table + (i << (shift + 2)) + (car_laps - 1) * 4, 8)))
                 except Exception:
                     cross = prev_cross = None
             cars.append(CarSnapshot(
@@ -279,7 +279,7 @@ class Game:
                 pitting=buf[mm.OFF_PITTING], wear_lf=f(mm.OFF_WEAR_LF), wear_rf=f(mm.OFF_WEAR_RF),
                 wear_lr=f(mm.OFF_WEAR_LR), wear_rr=f(mm.OFF_WEAR_RR), damage=damage,
                 number=number, name=name,
-                laps_done=laps_done if 0 <= laps_done < 10000 else 0,
+                laps_done=car_laps if 0 <= car_laps < 10000 else 0,
                 lap_dist=dist if dist == dist and 0 <= dist < 100000 else 0.0,
                 side_flag=buf[mm.OFF_SIDE_FLAG], controlled=i != mm.PLAYER_SLOT,
                 make_id=buf[mm.OFF_MAKE], make=self.make_name(buf[mm.OFF_MAKE]),

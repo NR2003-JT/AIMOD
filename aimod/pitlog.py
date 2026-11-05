@@ -8,11 +8,14 @@ session ends are written without them.
 from __future__ import annotations
 
 import csv
+import logging
 import os
 import re
 import time
 
 from .strategy import PitEvent
+
+log = logging.getLogger("aimod.pitlog")
 
 COLUMNS = ["time", "lap", "car", "driver", "stop", "service", "code", "fuel", "reason", "flag",
            "pos_in", "pos_out", "gained", "service_time", "pit_road_time", "request_to_exit",
@@ -46,11 +49,19 @@ def row_for(ev: PitEvent, track: str) -> list:
 
 
 class PitLog:
-    def __init__(self, directory: str):
+    """Never raises from a write: a CSV that can't be written (open in Excel, which locks it) keeps its rows in
+    a backlog that is tried again on the next write, retry() or flush(), so the strategy tick never sees it."""
+    RETRY_S = 5.0
+
+    def __init__(self, directory: str, clock=time.monotonic):
         self.dir = directory
         self.pending: dict[int, tuple[PitEvent, str]] = {}
         self._file: str | None = None
         self._track = ""
+        self._backlog: list[tuple[str, list]] = []    # (csv path, row) not written yet
+        self._clock = clock
+        self._last_try = float("-inf")
+        self._warned = False
 
     def new_session(self):
         self.flush()
@@ -70,15 +81,55 @@ class PitLog:
 
     def flush(self):
         for ev, track in list(self.pending.values()):
-            self._write(row_for(ev, track), track)
+            self._queue(row_for(ev, track), track)
         self.pending.clear()
+        self._drain()
+
+    @property
+    def unwritten(self) -> int:
+        return len(self._backlog)
+
+    def retry(self):
+        """Try the backlog again (cheap when it's empty; at most every RETRY_S while the file stays locked)."""
+        if self._backlog and self._clock() - self._last_try >= self.RETRY_S:
+            self._drain()
 
     def _write(self, row: list, track: str):
+        self._queue(row, track)
+        self._drain()
+
+    def _queue(self, row: list, track: str):
         if self._file is None:
-            os.makedirs(self.dir, exist_ok=True)
             safe = re.sub(r"[^\w.-]+", "_", track or "unknown")
             self._file = os.path.join(self.dir, time.strftime("pitlog_%Y%m%d_%H%M%S_") + safe + ".csv")
-            with open(self._file, "w", newline="", encoding="utf-8") as f:
-                csv.writer(f).writerow(COLUMNS)
-        with open(self._file, "a", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow(row)
+        self._backlog.append((self._file, row))
+
+    def _drain(self):
+        self._last_try = self._clock()
+        left: list[tuple[str, list]] = []
+        stuck: set[str] = set()                       # files that failed this pass (rows stay in order)
+        err = None
+        for path, row in self._backlog:
+            if path in stuck:
+                left.append((path, row))
+                continue
+            try:
+                os.makedirs(self.dir, exist_ok=True)
+                new = not os.path.exists(path)
+                with open(path, "a", newline="", encoding="utf-8") as f:
+                    w = csv.writer(f)
+                    if new:
+                        w.writerow(COLUMNS)
+                    w.writerow(row)
+            except OSError as e:
+                stuck.add(path)
+                left.append((path, row))
+                err = e
+        self._backlog = left
+        if left and not self._warned:
+            self._warned = True
+            log.warning("Pit log: can't write %s (%s) - is it open in another program? %d row(s) kept, "
+                        "tried again every %.0f s", os.path.basename(left[0][0]), err, len(left), self.RETRY_S)
+        elif not left and self._warned:
+            self._warned = False
+            log.info("Pit log: held rows written")

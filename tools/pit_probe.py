@@ -243,9 +243,11 @@ class Probe:
                     magic = pm.read_bytes(cave, 8)
                 except Exception:
                     magic = b""
-                if magic == b"AIMGATE2":
+                if magic in (b"AIMGATE2", b"AIMGATE3"):
                     dl = pm.read_uint(cave + 8)
-                    gate = f"v2 {'ARMED' if pm.read_uint(GAME_TICKS) < dl else 'disarmed'}"
+                    lo = pm.read_uint(cave + 0x14) if magic == b"AIMGATE3" else 0
+                    armed = lo <= pm.read_uint(GAME_TICKS) < dl
+                    gate = f"v{magic[-1:].decode()} {'ARMED' if armed else 'disarmed'}"
                     self.gate_cave = cave
                 else:
                     gate = "hooked (older/unknown cave)"

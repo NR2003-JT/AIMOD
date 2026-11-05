@@ -475,13 +475,18 @@ class StrategyEngine:
         self.cars: dict[int, CarState] = {}
         self.reset()
 
-    def reset(self):
+    def hand_off_runs(self):
+        """Give the tire model every run measured so far, the open ones too (they are closed: each is
+        reported once). Call it while the model is still on the session's track and mod: the app does this
+        before switching the model to a new track, so the old track's last runs aren't learned as the new one's."""
         model = getattr(self, "tire_model", None)
         if model is not None and hasattr(self, "pace"):
-            self.pace.flush()                             # session over: keep what its runs taught us
+            self.pace.flush()
             for slope, laps in self.pace.take_finished():
                 model.add_run(slope, laps, practice=not getattr(self, "_race", True))
-        self.tire_model = model
+
+    def reset(self):
+        self.hand_off_runs()                              # session over: keep what its runs taught us
         self._race = True
         self.teams = {}
         self.crew_chief = getattr(self, "crew_chief", None)   # chassis adjustments (set up by the app)
@@ -2114,7 +2119,8 @@ class StrategyEngine:
                     st = self.state(car.idx)
                     st.damage_ref = car.damage
                     st.forced_damage = False
-            self.rng.seed(int(time.time()))
+            # (no reseed here: the live engine's Random() is already unseeded, and a seeded one passed in by
+            # tests / racesim must stay reproducible)
         self.last_flag = snap.flag
 
         self.drafting = snap.drafting
