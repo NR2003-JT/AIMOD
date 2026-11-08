@@ -35,3 +35,6 @@ CLAUDE.md
 
 # Claude edit backups
 *.before-claude-*
+
+# Personal install helper (local paths)
+install_softer_adjustments.ps1
