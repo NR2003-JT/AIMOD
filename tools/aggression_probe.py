@@ -83,6 +83,22 @@ OFF_AGG_WORK = RATING_BASE + 12 * AGG + 8        # car + 0x16F6
 REL_BASE, REL_STRIDE, REL_SLOTS = 0x13C3, 0x5D, 8
 REL_ACTIVE, REL_TYPE, REL_OTHER, REL_ROOM = 0x10, 0x18, 0x1C, 0x49
 OFF_ROOM_MAX = 0x1BAD                            # the largest room value over the car's relations
+# --rel-trace (read only). The avoidance code, from the static disassembly of NR2003.exe (0x52B532..0x52BCFC, 2026-11-08;
+# not yet confirmed live - this trace is what confirms it): every AI step a car's lateral and longitudinal demands
+# (+0x1BAD / +0x1BB1) are reset to bases (+0x1B85 / +0x1B89), each of the 8 relations then raises them (the room it
+# worked out, +0x49 / +0x4D), and they are clamped to caps (+0x1B95 / +0x1B99) the game recomputes every step. They push
+# the car's target line aside and make it brake. The trace shows which of these produces the side-gap floor.
+REL_ROOM2 = 0x4D
+OFF_DEMAND_LAT, OFF_DEMAND_LON = 0x1BAD, 0x1BB1
+OFF_BASE_LAT, OFF_BASE_LON = 0x1B85, 0x1B89
+OFF_CAP_LAT, OFF_CAP_LON = 0x1B95, 0x1B99
+OFF_SIDE_PAD = 0x1BEE                            # the side padding the relation code actually uses (ai_dlat_pad x this)
+OFF_CAR_FLAGS = 0x139F                           # bit 0x200: both cars set -> one relation case pads a flat 2.5
+REL_TRACE_NEAR_M = 15.0                          # trace rows while another car is this close
+REL_TRACE_COLS = (["t", "step", "slot", "car", "agg", "near_slot", "near_car", "along", "lat", "speed",
+                   "base_lat", "base_lon", "cap_lat", "cap_lon", "demand_lat", "demand_lon", "side_base", "side_pad",
+                   "flags"]
+                  + [f"{n}{j}" for j in range(REL_SLOTS) for n in ("act", "case", "other", "room", "room2")])
 CAR_WIDTH = 1.9035
 SAFE_MAX = 2 * (3.4035 - CAR_WIDTH) / 1.25       # ~2.4: above this the tightest threshold is under a car width
 HARD_MAX = 4.0                                   # all three side thresholds meet at ~0.9 m (half a car) here
@@ -391,6 +407,9 @@ class Probe:
         self.param_nat: dict[str, tuple[int, float]] = {}   # name -> (address, the game's value)
         self.param_w: dict[str, float] = {}
         self.side_pad = 1.0                             # --side-pad: the pair's side-padding base scale (1 = off)
+        self.rel_file = None                            # --rel-trace: CSV of the avoidance terms near other cars
+        self.rel_path = ""
+        self.rel_sum: dict[tuple, dict] = {}            # (step, slot) -> running totals for the summary
         self.side_nat: dict[int, float] = {}            # slot -> the game's own car+0x1BEA
         self.side_w: dict[int, float] = {}              # slot -> what we wrote
         self.pace = 1.0                                 # --pace: the leader of the pair gets this traction scale
@@ -412,6 +431,84 @@ class Probe:
             self.out.close()
         except Exception:
             pass
+        if self.rel_file is not None:
+            try:
+                self.rel_file.close()
+            except Exception:
+                pass
+
+    def rel_trace_open(self):
+        self.rel_path = self.path.replace("aggression_probe_", "aggression_relations_").replace(".txt", ".csv")
+        self.rel_file = open(self.rel_path, "w", encoding="utf-8", newline="")
+        self.rel_file.write(",".join(REL_TRACE_COLS) + "\n")
+        self.log(f"relation trace (read only): {self.rel_path}")
+
+    def relation_rows(self, slot: int) -> list[tuple]:
+        """all 8 relation slots raw: (active, case, other slot or -1, room, room2)"""
+        try:
+            blk = self.pm.read_bytes(self.base(slot) + REL_BASE, REL_SLOTS * REL_STRIDE)
+        except Exception:
+            return [(0, 0, -1, 0.0, 0.0)] * REL_SLOTS
+        out = []
+        for j in range(REL_SLOTS):
+            o = j * REL_STRIDE
+            act, case, other = (struct.unpack_from("<I", blk, o + f)[0] for f in (REL_ACTIVE, REL_TYPE, REL_OTHER))
+            r1, r2 = (struct.unpack_from("<f", blk, o + f)[0] for f in (REL_ROOM, REL_ROOM2))
+            o_slot = (other - mm.CAR_BLOCK_0) // mm.CAR_STRIDE if mm.CAR_BLOCK_0 <= other else -1
+            out.append((act, case, o_slot if 0 <= o_slot < mm.NUM_CARS else -1,
+                        r1 if math.isfinite(r1) else 0.0, r2 if math.isfinite(r2) else 0.0))
+        return out
+
+    def rel_trace_row(self, st, s, t, names, nearest, side, speed):
+        """one CSV row (and the running totals) while another car is close; read only"""
+        if self.rel_file is None or nearest is None or nearest[0] > REL_TRACE_NEAR_M:
+            return
+        b = self.base(s)
+        f = {k: self.f32(b + off) for k, off in (
+            ("base_lat", OFF_BASE_LAT), ("base_lon", OFF_BASE_LON), ("cap_lat", OFF_CAP_LAT),
+            ("cap_lon", OFF_CAP_LON), ("dem_lat", OFF_DEMAND_LAT), ("dem_lon", OFF_DEMAND_LON),
+            ("side_base", OFF_SIDE_BASE), ("side_pad", OFF_SIDE_PAD))}
+        try:
+            flags = struct.unpack("<I", self.pm.read_bytes(b + OFF_CAR_FLAGS, 4))[0]
+            agg = self.triplet(s, 0)[2]
+        except Exception:
+            flags, agg = 0, float("nan")
+        rows = self.relation_rows(s)
+        d, osl, along, lat = nearest
+        cells = [f"{t:.3f}", st.name, s, names.get(s, s), f"{agg:.3f}", osl, names.get(osl, osl), f"{along:.2f}",
+                 f"{lat:.2f}", f"{speed:.1f}"]
+        cells += [f"{f[k]:.4f}" for k in ("base_lat", "base_lon", "cap_lat", "cap_lon", "dem_lat", "dem_lon",
+                                          "side_base", "side_pad")]
+        cells.append(f"{flags:#x}")
+        for act, case, o, r1, r2 in rows:
+            cells += [act, case, o, f"{r1:.3f}", f"{r2:.3f}"]
+        self.rel_file.write(",".join(str(c).replace(",", " ") for c in cells) + "\n")
+        tot = self.rel_sum.setdefault((st.name, s), dict(n=0, side=0, capped=0, dem=0.0, cap=0.0, pad=0.0,
+                                                          room=0.0, room_n=0, min_lat=math.inf))
+        tot["n"] += 1
+        tot["dem"] += f["dem_lat"]
+        tot["cap"] += f["cap_lat"]
+        tot["pad"] += f["side_pad"]
+        if f["cap_lat"] > 0 and f["dem_lat"] >= f["cap_lat"] * 0.999:
+            tot["capped"] += 1                       # the demand ran into its cap: the cap decides, not the relations
+        for act, case, o, r1, _ in rows:
+            if act and o == osl:
+                tot["room"] += r1
+                tot["room_n"] += 1
+        if side:
+            tot["side"] += 1
+            tot["min_lat"] = min(tot["min_lat"], side[0])
+
+    def rel_trace_lines(self, step: str, s: int, names) -> list[str]:
+        tot = self.rel_sum.get((step, s))
+        if not tot or not tot["n"]:
+            return []
+        n = tot["n"]
+        gap = f"{tot['min_lat']:.2f} m" if math.isfinite(tot["min_lat"]) else "n/a"
+        return [f"  [{step}] avoidance trace {names.get(s, s)}: {n} rows near a car, {tot['side']} alongside "
+                f"(closest side gap {gap}); mean lateral demand {tot['dem'] / n:.3f} vs cap {tot['cap'] / n:.3f}, "
+                f"at the cap {100.0 * tot['capped'] / n:.0f}% of rows; mean side padding {tot['pad'] / n:.2f}; "
+                f"mean room for the nearest car {tot['room'] / max(1, tot['room_n']):.2f}"]
 
     # ---------------------------------------------------------------- memory
     def base(self, slot: int) -> int:
@@ -645,6 +742,8 @@ class Probe:
             st.gap_min = min(st.gap_min, ahead[0])
         rels = self.relations(s)
         st.last_rels = rels
+        if self.rel_file is not None:
+            self.rel_trace_row(st, s, t, names, nearest, side, sp)
         seen, in_agg = set(), False
         for _, typ, room in rels:
             seen.add(typ)
@@ -976,6 +1075,8 @@ class Probe:
             self._finish_lift(st, s)
             for line in st.lines():
                 self.log(line)
+            for line in self.rel_trace_lines(st.name, s, names):
+                self.log(line)
         if pair is not None:
             a, b = pair.a, pair.b
             pair.contacts = max(sum(1 for c in sts[a].contacts if c[1] == names.get(b)),
@@ -1297,6 +1398,10 @@ def main(argv=None):
                     help="pair only: scale both cars' side-padding base (car+0x1BEA, normally 1.0) so they leave less "
                          "room beside each other - per car, nobody else changes (0-1; e.g. 0.2). Meant to be used "
                          "with a high aggression step: at 3.3-4.0 the side gap still stayed 3.1-3.6 m (Richmond 11-05)")
+    ap.add_argument("--rel-trace", action="store_true",
+                    help="read only, with --test / --pair / --showdown: write a CSV of the avoidance terms (lateral "
+                         "and longitudinal demand, their bases and caps, side padding, all 8 relation slots) while "
+                         "another car is within 15 m, and a summary per step")
     ap.add_argument("--stop-on-contact", action="store_true",
                     help="pair: end the ramp at the first real contact between the two (4 s of aftermath are logged)")
     ap.add_argument("--lock-wait", type=float, default=LOCK_WAIT_S, metavar="SECONDS",
@@ -1365,6 +1470,11 @@ def main(argv=None):
     p.pace = a.pace if a.pace is not None else 1.0
     p.params = params
     p.side_pad = a.side_pad if a.side_pad is not None else 1.0
+    if a.rel_trace:
+        if not (a.test or a.pair):
+            p.close()
+            raise SystemExit("--rel-trace needs --test, --pair or --showdown")
+        p.rel_trace_open()
     try:
         work = p.read_table()
         numbers = [a.test] if a.test else list(a.pair or [])

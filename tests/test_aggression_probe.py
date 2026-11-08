@@ -41,6 +41,25 @@ class ProbeDryRun(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):          # the probe prints its log; the file has it all
             return ap.main(["--fake", "--fake-accel", "40", "--lock-wait", "0", "--log-dir", self.tmp.name, *args])
 
+    def test_rel_trace_writes_a_csv_and_only_reads(self):
+        p = self.run_probe("--pair", "24", "48", "--steps", "0.5,3.0", "--auto", "8", "--rel-trace")
+        self.assertTrue(os.path.isfile(p.rel_path))
+        with open(p.rel_path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        self.assertEqual(lines[0].split(","), ap.REL_TRACE_COLS)
+        self.assertGreater(len(lines), 5)
+        self.assertTrue(all(len(l.split(",")) == len(ap.REL_TRACE_COLS) for l in lines[1:]))
+        touched = {addr % mm.CAR_STRIDE for addr, _ in p.pm.writes if addr >= mm.CAR_BLOCK_0}
+        for off in (ap.OFF_DEMAND_LAT, ap.OFF_DEMAND_LON, ap.OFF_BASE_LAT, ap.OFF_BASE_LON, ap.OFF_CAP_LAT,
+                    ap.OFF_CAP_LON, ap.OFF_SIDE_PAD, ap.OFF_CAR_FLAGS, ap.REL_BASE):
+            self.assertNotIn(off, touched)                    # the trace reads these, it never writes them
+        log = open(p.path, encoding="utf-8").read()
+        self.assertIn("avoidance trace", log)
+
+    def test_rel_trace_needs_a_car_or_pair(self):
+        with self.assertRaises(SystemExit):
+            self.run_probe("--field", "--rel-trace")
+
     def test_pair_steps_and_put_back(self):
         p = self.run_probe("--pair", "24", "48", "--steps", "0.5,3.0", "--auto", "8")
         pm = p.pm
