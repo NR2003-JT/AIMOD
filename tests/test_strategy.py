@@ -2946,3 +2946,31 @@ class FreePassTests(unittest.TestCase):
                              fuel_left=20)
         self.assertNotIn("wave around", st.note)                           # not treated as a wave candidate
         self.assertTrue(st.decision)
+
+
+class FuelThresholdTests(unittest.TestCase):
+    def test_off_by_default_uses_the_default_level(self):
+        from aimod.strategy import fuel_pit_fraction
+        p = StrategyParams()
+        self.assertFalse(p.green_fuel_aggressive)
+        self.assertEqual(fuel_pit_fraction(p, "ON WINDOW", 0), 0.25)
+        self.assertEqual(fuel_pit_fraction(StrategyParams(fuel_threshold_default=0.3), "ON WINDOW", 0), 0.3)
+
+    def test_aggressive_runs_from_min_to_max_with_tire_wear(self):
+        from aimod.strategy import fuel_pit_fraction
+        p = StrategyParams(green_fuel_aggressive=True, green_fuel_threshold_min=5, green_fuel_threshold_max=10)
+        self.assertAlmostEqual(fuel_pit_fraction(p, "ON WINDOW", 0), 0.05)
+        self.assertAlmostEqual(fuel_pit_fraction(p, "ON WINDOW", 40), 0.075)
+        self.assertEqual(fuel_pit_fraction(p, "ON WINDOW", 80), 0.25)        # worn: the normal level
+        self.assertEqual(fuel_pit_fraction(p, FUEL_MAKES_IT, 0), 0.25)
+
+    def test_swapped_min_and_max_still_work(self):
+        from aimod.strategy import fuel_pit_fraction
+        p = StrategyParams(green_fuel_aggressive=True, green_fuel_threshold_min=10, green_fuel_threshold_max=5)
+        self.assertAlmostEqual(fuel_pit_fraction(p, "ON WINDOW", 0), 0.05)
+
+    def test_new_settings_round_trip_through_presets(self):
+        p = Preset.from_dict({"tank_extend_pct": 10, "green_fuel_aggressive": True, "fuel_threshold_default": 0.2})
+        q = Preset.from_dict(p.to_dict())
+        self.assertEqual((q.tank_extend_pct, q.green_fuel_aggressive, q.fuel_threshold_default), (10, True, 0.2))
+        self.assertFalse(Preset().green_fuel_aggressive)

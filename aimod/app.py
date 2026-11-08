@@ -189,6 +189,19 @@ PARAM_FIELDS = {  # key: (label, type, tooltip)
         "must pit (one splash later gets it home). Typical: 10-20% of a tank (e.g. 7-12 on a 65-lap tank). "
         "Higher = more cars pit under late cautions."
     ),
+    "tank_extend_pct": ("Tank range extension (%)", float,
+                        "Stretches the tank range used to decide whether a car can still make the finish with one "
+                        "more stop (e.g. 10 = +10%). 0 = off. Does not change real fuel use."),
+    "fuel_threshold_default": ("Fuel pit level (fraction of tank)", float,
+                               "A car with fuel at or below this fraction of a tank, that can't reach the finish, "
+                               "gets a fuel stop. 0.25 = 25%. Used always, except where aggressive green-flag fuel "
+                               "applies."),
+    "green_fuel_threshold_min": ("Aggressive fuel level, fresh tires (%)", float,
+                                 "Aggressive green-flag fuel only. Pit level (% of a tank) for a car on fresh tires; "
+                                 "it rises to the 'worn tires' level as tire wear nears 80."),
+    "green_fuel_threshold_max": ("Aggressive fuel level, tires wearing (%)", float,
+                                 "Aggressive green-flag fuel only. Pit level (% of a tank) for a car whose tire wear "
+                                 "is close to 80. At 80 and over the normal fuel pit level applies."),
     "stage_early": ("Stage early caution window (laps)", int,
                     "A caution this many laps (or fewer) before a stage end is treated as that stage's break, as "
                     "stage racing companion apps that end a stage early under caution do. 0 = only a caution at the stage end."),
@@ -205,7 +218,7 @@ PARAM_FIELDS = {  # key: (label, type, tooltip)
 }
 BOOL_FIELDS = ("oem_strategy", "stint_strategy", "lapped_wave",
                "team_strategy", "follow_player", "behavior_on", "behavior_reactions",
-               "behavior_teams")
+               "behavior_teams", "green_fuel_aggressive")
 
 log = logging.getLogger("aimod")
 
@@ -595,6 +608,16 @@ class App:
         Tooltip(self.btn_use_learned, "Copy the learned laps per tank into the manual Tank size box.")
         self._entry_row(ff, 3, "fuel_margin")
         self._entry_row(ff, 4, "finish_fuel")
+        self._entry_row(ff, 6, "tank_extend_pct")
+        self._entry_row(ff, 7, "fuel_threshold_default")
+        self.vars["green_fuel_aggressive"] = tk.BooleanVar(value=False)
+        cb = ttk.Checkbutton(ff, text="Aggressive green-flag fuel", variable=self.vars["green_fuel_aggressive"],
+                             command=self._on_param_change)
+        cb.grid(row=8, column=0, columnspan=2, sticky="w")
+        Tooltip(cb, "Green flag: cars on good tires run the tank lower before a fuel stop, between the two levels "
+                    "below. Off = every car uses the normal fuel pit level.")
+        self._entry_row(ff, 9, "green_fuel_threshold_min")
+        self._entry_row(ff, 10, "green_fuel_threshold_max")
         self.lbl_mileage = ttk.Label(ff, style="Dim.TLabel")
         self.lbl_mileage.grid(row=5, column=0, columnspan=2, sticky="w")
         Tooltip(self.lbl_mileage, "Learned from each car's real fuel level on clean green-flag laps. Each car "
@@ -1458,6 +1481,10 @@ class App:
             threat_positions=p.threat_positions, stint_strategy=p.stint_strategy,
             track_position_bias=p.track_position_bias, oem_strategy=p.oem_strategy, oem_gap=p.oem_gap,
             stint_spread=p.stint_spread, ss_stint_spread=p.ss_stint_spread, fuel_reach=p.fuel_reach,
+            tank_extend_pct=p.tank_extend_pct, fuel_threshold_default=p.fuel_threshold_default,
+            green_fuel_aggressive=p.green_fuel_aggressive,
+            green_fuel_threshold_min=p.green_fuel_threshold_min,
+            green_fuel_threshold_max=p.green_fuel_threshold_max,
             ss_topoff_pct=p.ss_topoff_pct, lapped_wave=p.lapped_wave, pace_strategy=True,
             worn_pct=p.worn_pct, team_strategy=p.team_strategy, follow_player=p.follow_player,
             value_tires=True,

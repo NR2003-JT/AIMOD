@@ -129,6 +129,7 @@ class StrategyParams:
     damage_threshold: float = 0.5
     repair_on_stops: bool = True    # a damaged car's stop includes the repair, caution stops too (car +0x73D)
     tank_laps: float = 70.0
+    tank_extend_pct: float = 0.0    # % to extend tank range (0 = no extension, 10 = +10% range)
     fuel_margin: float = 2          # v1 MARGEN_SEGURIDAD
     plan_margin: float = 5          # v1 MARGEN_DEJ
     dispersion_divisor: float = 5   # v1 DIVISOR_DISPERSION
@@ -152,6 +153,10 @@ class StrategyParams:
     ss_stint_spread: int = 30       # ...at drafting tracks, where teams pit in tight groups
     fuel_reach: float = 15          # caution: within this many laps of making the finish -> pit
     ss_topoff_pct: int = 75         # drafting tracks, caution: pit for fuel unless the tank is fuller than this
+    green_fuel_aggressive: bool = False # green flag: pit for fuel more aggressively on fuel stretches
+    green_fuel_threshold_min: float = 5.0   # green flag: pit when fuel drops to this % on safe stretches
+    green_fuel_threshold_max: float = 10.0  # green flag: pit when fuel drops to this % on aggressive stretches
+    fuel_threshold_default: float = 0.25    # default fuel pit threshold: 0.25=25%, 0.20=20%, 0.30=30%, etc
     lapped_wave: bool = True        # caution: lapped cars in line for the wave around stay out to get the lap back
     pace_strategy: bool = True      # lap pace vs the cars around (and own early run) scales tire calls
     worn_pct: float = 1.0           # lap time loss (% of the early-run pace) that counts as worn tires
@@ -465,6 +470,18 @@ class TickResult:
 
 def clamp(x, lo=0.0, hi=1.0):
     return lo if x < lo else hi if x > hi else x
+
+
+def fuel_pit_fraction(p, fuel_state, tire_threat):
+    """Fraction of a tank at or below which a car that can't reach the finish gets a fuel stop.
+    Normally p.fuel_threshold_default. With aggressive green-flag fuel (and not MAKES IT / SHORT), a car with
+    tire wear probability under 80 waits longer: green_fuel_threshold_min % on fresh tires, rising linearly to
+    green_fuel_threshold_max % as the wear probability reaches 80."""
+    if p.green_fuel_aggressive and fuel_state not in (FUEL_MAKES_IT, FUEL_SHORT) and tire_threat < 80:
+        lo = min(p.green_fuel_threshold_min, p.green_fuel_threshold_max)
+        hi = max(p.green_fuel_threshold_min, p.green_fuel_threshold_max)
+        return (lo + (hi - lo) * max(0.0, tire_threat) / 80.0) / 100.0
+    return p.fuel_threshold_default
 
 
 class StrategyEngine:
@@ -2260,13 +2277,15 @@ class StrategyEngine:
             tank, fuel_left = self.fuel_model(car, st, car_lap, p0)
             if abs(tank - p0.tank_laps) > 0.05:
                 p = dataclasses.replace(p0, tank_laps=tank)          # this car's own tank, in laps
+            # Apply tank extension if configured
+            extended_tank = tank * (1.0 + p0.tank_extend_pct / 100.0) if p0.tank_extend_pct > 0 else tank
             if not race:
                 st.fuel_state = FUEL_PRACTICE
                 fuel_left = tank
             else:
                 if to_go <= fuel_left - min(p.fuel_margin, 2.0):     # makes it, with the cushion to spare
                     st.fuel_state = FUEL_MAKES_IT
-                elif to_go <= tank - p.fuel_margin:
+                elif to_go <= extended_tank - p.fuel_margin:         # use extended tank for window calculation
                     st.fuel_state = FUEL_WINDOW
                 else:
                     st.fuel_state = FUEL_SHORT
@@ -2441,7 +2460,10 @@ class StrategyEngine:
                 svc = self.game_stop_service(st, p, prob_l, prob_r)
                 since = car_lap - st.last_stop_lap
                 reason = ""
-                needs_fuel = fuel_left < to_go and (st.fuel_state == FUEL_WINDOW or fuel_left <= tank * 0.25)
+                # Calculate fuel threshold for game stop guard
+                # On aggressive green-flag stretches with good tires, use configurable threshold (5-10%)
+                fuel_threshold_pct = fuel_pit_fraction(p, st.fuel_state, max(prob_l, prob_r))
+                needs_fuel = fuel_left < to_go and (st.fuel_state == FUEL_WINDOW or fuel_left <= tank * fuel_threshold_pct)
                 worn = (not self.drafting) and svc != FUEL_ONLY and max(prob_l, prob_r) >= 90
                 losses = self.tire_losses(car, st, car_lap) if p.value_tires else None
                 if losses is not None:

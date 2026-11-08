@@ -50,6 +50,11 @@ class Preset:
     stint_spread: int = 80
     ss_stint_spread: int = 30
     fuel_reach: float = 15
+    tank_extend_pct: float = 0.0
+    fuel_threshold_default: float = 0.25
+    green_fuel_aggressive: bool = False
+    green_fuel_threshold_min: float = 5.0
+    green_fuel_threshold_max: float = 10.0
     ss_topoff_pct: int = 75
     lapped_wave: bool = True
     pace_strategy: bool = True
