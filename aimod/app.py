@@ -204,7 +204,18 @@ PARAM_FIELDS = {  # key: (label, type, tooltip)
                                  "is close to 80. At 80 and over the normal fuel pit level applies."),
     "stage_early": ("Stage early caution window (laps)", int,
                     "A caution this many laps (or fewer) before a stage end is treated as that stage's break, as "
-                    "stage racing companion apps that end a stage early under caution do. 0 = only a caution at the stage end."),
+                    "stage racing companion apps that end a stage early under caution do. 0 = automatic: the window "
+                    "is how long this race's cautions have lasted (3 laps until it has seen one), less the crew "
+                    "chief's call time below. When Race Control runs the stages it throws its own stage caution on the last "
+                    "lap, so the automatic window is 0 there: only a caution still out at the stage end is the break."),
+    "stage_call_lead": ("Stage call lead time (laps)", float,
+                        "Laps the crew chief needs to call the stage-break stop and get the cars onto pit road. "
+                        "Automatic stage window = caution length - this. Raise it if cars miss the break service "
+                        "after a caution just before the stage end."),
+    "stage_double_back_pct": ("Break double-back (%)", int,
+                              "Cars that already took service at the caution just before the break, and don't need "
+                              "it, come back at the break anyway to freshen up or top off: this % of them. "
+                              "0 = nobody. Cars that need fuel or tires always pit."),
     "flip_pct": ("Stage flip — cars that jump the break (%)", int,
                  "Cars outside the top 8 that can reach well into the next stage on fuel may pit a few laps "
                  "before the stage ends, stay out at the break and restart up front. 0 = nobody flips."),
@@ -693,6 +704,8 @@ class App:
         Tooltip(ent, tip)
         self._entry_row(gf2, 3, "stage_early")
         self._entry_row(gf2, 4, "flip_pct")
+        self._entry_row(gf2, 6, "stage_call_lead")
+        self._entry_row(gf2, 7, "stage_double_back_pct")
         self.lbl_stages = ttk.Label(gf2, style="Dim.TLabel", wraplength=280)
         self.lbl_stages.grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
         gf2.columnconfigure(1, weight=1)
@@ -1492,7 +1505,8 @@ class App:
             game_plan_off="no_game_plan_stops" in self.game.applied_patches,
             rules_draft=self._team_rules()["draft"], rules_other=self._team_rules()["other"],
             stages=p.stages, stage_by=p.stage_by, stage_ends=tuple(parse_stage_ends(p.stage_ends) or ()),
-            stage_early=p.stage_early, flip_pct=p.flip_pct,
+            stage_early=p.stage_early, flip_pct=p.flip_pct, stage_call_lead=p.stage_call_lead,
+            stage_double_back_pct=p.stage_double_back_pct,
             crew_brain=True)
 
     def _tank_key(self) -> str:

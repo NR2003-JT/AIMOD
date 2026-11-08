@@ -65,7 +65,9 @@ class Preset:
     stages: int = 0                 # 0 = no stages, else 2-4 stages
     stage_by: str = "laps"          # laps | percent
     stage_ends: str = ""            # end of each stage but the last, e.g. "80, 160" or "25, 50"
-    stage_early: int = 0            # a caution this many laps before a stage end ends the stage there
+    stage_early: int = 0            # a caution this many laps before a stage end ends the stage there (0 = automatic)
+    stage_call_lead: float = 1.0    # laps the crew chief needs to call the stage-break stop
+    stage_double_back_pct: int = 10 # % of cars serviced just before the break that come back at it anyway
     flip_pct: int = 25              # % of eligible cars that flip a stage
     behavior_on: bool = False       # driver behavior: AI cars save fuel / save or cool tires / push
     behavior_strength: int = 70     # % of the behavior effect sizes
@@ -99,6 +101,8 @@ class Preset:
             p.stage_by = "laps"
         p.stage_ends = str(p.stage_ends or "")
         p.stage_early = int(max(0, p.stage_early))
+        p.stage_call_lead = float(max(0.0, min(10.0, p.stage_call_lead)))
+        p.stage_double_back_pct = int(max(0, min(100, p.stage_double_back_pct)))
         p.flip_pct = int(max(0, min(100, p.flip_pct)))
         p.behavior_strength = int(max(0, min(200, p.behavior_strength)))
         p.behavior_late_pct = int(max(0, min(50, p.behavior_late_pct)))

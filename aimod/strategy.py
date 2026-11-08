@@ -171,7 +171,10 @@ class StrategyParams:
     stages: int = 0                 # stages in the race (0/1 = no stages)
     stage_by: str = "laps"          # laps | percent: how stage_ends are given
     stage_ends: tuple = ()          # end of each stage but the last (race lap or % of the race)
-    stage_early: int = 0            # a caution this many laps before a stage end ends the stage
+    stage_early: int = 0            # a caution this many laps before a stage end ends the stage (0 = automatic)
+    stage_call_lead: float = 1.0    # laps the crew chief needs to get the stage-break stop called and on pit road
+    stage_double_back_pct: int = 10 # % of cars that already serviced just before the break and don't need to,
+                                    # but come back at it anyway (freshen up / top off); 0 = nobody
     flip_pct: int = 25              # % of eligible cars that flip a stage (pit just before the break)
     crew_brain: bool = False        # crew chief brain: cc_rating noise, aggression, teammate offset
 
@@ -340,6 +343,8 @@ class CarState:
     wave_hold: bool = False                  # staying out because it is in line for the wave around
     tires_good: bool = False                 # this caution's stop: its tires are still good (2 tires will do)
     pre_break: int | None = None             # stage end it fuelled past at a caution just before that break
+    stage_serviced: int | None = None        # stage end whose break service it already took (caution stop at or
+                                             # just before the break): no flip, no second stop from the stage plan
     borderline: int = 0                      # laps short of one stop fewer: runs to the fuel window
     game_accepted: bool = False              # AIMOD let a stop the game asked for go ahead
     road_prev: bool = False                  # player's car: on pit road last tick (its stops for the AI)
@@ -531,6 +536,8 @@ class StrategyEngine:
         self.stage_list: list[int] = []      # race laps where stages end (all but the last stage)
         self.stage_done: set[int] = set()
         self.stage_break: int | None = None  # this caution is the break after the stage ending on that lap
+        self.caution_lens: list[int] = []    # laps each caution of this race lasted (yellow to green)
+        self._caution_lap0: int | None = None
         self.lap_total = 0
         self.scored: dict[int, list] = {}     # idx -> [laps, crossing sequence, crossing game time]
         self.seq = 0
@@ -1618,11 +1625,33 @@ class StrategyEngine:
             return e + 2 - self.lap_now
         return to_go
 
-    def stage_break_start(self, p: StrategyParams, lap_now: int):
+    DEFAULT_CAUTION_COVER = 3.0              # laps a caution is assumed to last until this race has shown some
+
+    def caution_cover(self) -> float:
+        """Laps a caution lasts here: the median of this race's cautions so far (last 6), else a default."""
+        if self.caution_lens:
+            return float(statistics.median(self.caution_lens[-6:]))
+        return self.DEFAULT_CAUTION_COVER
+
+    def break_window(self, p: StrategyParams) -> int:
+        """How many laps before the stage end a caution still counts as that stage's break. stage_early > 0 is a
+        fixed number of laps. 0 = automatic: the laps the caution is expected to last, less the laps the crew
+        chief needs to get the stop called and the cars onto pit road, so the leader still reaches the stage end
+        under this yellow and the service is at the break, not a stop before it."""
+        if p.stage_early > 0:
+            return int(p.stage_early)
+        if getattr(self, "stage_source", "preset") == "RaceControl":
+            return 0        # Race Control throws its own stage caution on the last lap: an earlier one is a normal
+                            # caution (only one still out at the stage end is the break: the late catch in tick)
+        return max(0, int(self.caution_cover() - max(0.0, p.stage_call_lead) + 1e-9))
+
+    def stage_break_start(self, p: StrategyParams, lap_now: int, window: int | None = None):
         """A caution just came out: is it the break after a stage (at or just before the stage end)?"""
         self.stage_break = None
         e = self.next_stage_end()
-        if e is not None and e - max(0, p.stage_early) <= lap_now <= e + 2:
+        if window is None:
+            window = self.break_window(p)
+        if e is not None and e - max(0, window) <= lap_now <= e + 2:
             self.stage_break = e
             self.stage_done.add(e)
 
@@ -1637,6 +1666,8 @@ class StrategyEngine:
         if self.drafting and self.fuel_save_gain > 0:     # the pack saves fuel the rest of the way (see plan_stop)
             reach += self.fuel_save_gain * max(0.0, min(end_car, reach) - car_lap - 3) * 0.7
         if reach >= end_car + 2:
+            if st.stage_serviced == end:                  # already took the break service at the caution: no flip
+                st.stage_checked, st.flip_stage = end, None
             if st.stage_checked != end:
                 st.stage_checked = end
                 flip = self.flip_lap(st, p, rating, car_lap, lap_offset, end, me, tank)
@@ -1717,12 +1748,13 @@ class StrategyEngine:
         def green_stops(f):
             return 0 if f - p.fuel_margin >= nxt else math.ceil((nxt - f + p.fuel_margin) / usable)
 
-        recent = st.pre_break == self.stage_break and st.stops > 0
+        recent = (st.pre_break == self.stage_break or st.stage_serviced == self.stage_break) and st.stops > 0
         worn = max(car.wear_rf, car.wear_rr, car.wear_lf, car.wear_lr) >= 0.35
         if (me is not None and me.down == 0 and (recent or used < 0.35) and not worn
                 and green_stops(fuel_left) <= green_stops(tank)):
             # it pitted just before the break: stopping again only gives up the spots the others lose here
-            if self.rng.random() < (0.9 if recent else 0.6):
+            stay = 1.0 - max(0, min(100, p.stage_double_back_pct)) / 100.0 if recent else 0.6
+            if self.rng.random() < stay:
                 st.decision, st.note = False, f"stage {n} break: pitted recently, stays out for track position"
                 return True
         if fuel_left - p.fuel_margin >= nxt and me is not None and me.down == 0:
@@ -2126,9 +2158,13 @@ class StrategyEngine:
                 self.caution_start = self.now
                 self.caution_wall = wall
                 self.pits_open_at = None
+                self._caution_lap0 = lap_now
                 if self.race_started:
                     self.stage_break_start(p, lap_now)
             if green:
+                if race and self._caution_lap0 is not None and lap_now >= self._caution_lap0:
+                    self.caution_lens.append(lap_now - self._caution_lap0)
+                self._caution_lap0 = None
                 self.stage_break = None
             if green:
                 self.green_lap = lap_now
@@ -2138,6 +2174,19 @@ class StrategyEngine:
                     st.forced_damage = False
             # (no reseed here: the live engine's Random() is already unseeded, and a seeded one passed in by
             # tests / racesim must stay reproducible)
+        if race and not green and self.race_started and self.stage_break is None:
+            # The caution was out before the stage end was close enough to call it the break, and is still out when
+            # the leader reaches the stage's last lap: the stage ends under it (Race Control), so it IS the break.
+            # (Talladega 2026-11-06: yellow on lap 55, stage end 56.) Cars that already stopped keep their stop.
+            self.stage_break_start(p, lap_now, window=0)
+            if self.stage_break is not None:
+                log.info("Stage %d ends under this caution (lap %d): it is the stage break",
+                         self.stage_no(self.stage_break), lap_now)
+                for st in self.cars.values():
+                    if st.event is None and not st.in_box and not st.post_stop_lock:
+                        st.decision = None
+                        st.service = None
+                        st.done_service = None
         self.last_flag = snap.flag
 
         self.drafting = snap.drafting
@@ -2665,6 +2714,10 @@ class StrategyEngine:
                 st.in_box = True
                 st.urgency = 0
                 st.done_service = st.service
+                if race:
+                    near = self.break_near(p)
+                    st.stage_serviced = (self.stage_break if self.stage_break is not None
+                                         else near if near is not None and st.pre_break == near else None)
                 res.writes.extend(self.service_writes(i, car.side_flag, st.service,
                                                       st.fuel_level if st.fuel else 0))
 

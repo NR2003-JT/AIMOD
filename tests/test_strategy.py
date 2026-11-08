@@ -1788,10 +1788,133 @@ class StageTests(unittest.TestCase):
         eng.stage_break_start(p, 78)
         self.assertEqual(eng.stage_break, 80)
         eng = StrategyEngine(random.Random(1))
-        p = self.params(stage_early=0)
-        eng.update_stages(p, 240, 78)
-        eng.stage_break_start(p, 78)
+        p = self.params(stage_early=0)                          # automatic: 3-lap caution - 1 lap call = 2 laps
+        eng.update_stages(p, 240, 76)
+        eng.stage_break_start(p, 76)
         self.assertIsNone(eng.stage_break)
+
+    def test_automatic_window_follows_the_caution_length_and_the_call_lead(self):
+        eng = StrategyEngine(random.Random(1))
+        p = self.params(stage_early=0)
+        self.assertEqual(eng.break_window(p), 2)                # default 3-lap caution, 1 lap to make the call
+        eng.caution_lens = [6, 7, 5]
+        self.assertEqual(eng.break_window(p), 5)                # this race's cautions last 6 laps
+        self.assertEqual(eng.break_window(self.params(stage_early=0, stage_call_lead=3)), 3)
+        self.assertEqual(eng.break_window(self.params(stage_early=0, stage_call_lead=9)), 0)
+        self.assertEqual(eng.break_window(self.params(stage_early=4)), 4)   # a fixed window is left alone
+
+    def test_no_predictive_window_when_race_control_throws_the_stage_caution(self):
+        eng = StrategyEngine(random.Random(1))
+        p = self.params(stage_early=0)
+        eng.update_stages(p, 240, 78, (80, 160))                # stage ends from Race Control
+        self.assertEqual(eng.stage_source, "RaceControl")
+        self.assertEqual(eng.break_window(p), 0)
+        eng.stage_break_start(p, 78)
+        self.assertIsNone(eng.stage_break)                      # a normal caution; its own stage caution comes at 80
+        self.assertEqual(eng.break_window(self.params(stage_early=3)), 3)   # a manual window still applies
+
+    def test_caution_lengths_are_learned_from_the_flags(self):
+        eng = StrategyEngine(random.Random(1))
+        p = self.params(stage_ends=(100, 200))
+
+        def cars(lap, flag):
+            return race([car(0, laps_done=lap)], flag=flag, lap=lap + 1, total=240)
+        eng.tick(cars(10, GREEN), p)
+        eng.tick(cars(20, CAUTION), p)
+        eng.tick(cars(26, GREEN), p)
+        eng.tick(cars(40, CAUTION), p)
+        eng.tick(cars(44, GREEN), p)
+        self.assertEqual(eng.caution_lens, [6, 4])
+        self.assertEqual(eng.caution_cover(), 5.0)
+
+    def test_talladega_caution_one_lap_before_the_stage_end_is_the_break(self):
+        eng = StrategyEngine(random.Random(1))
+        p = self.params(stage_ends=(56, 118))                   # yellow on lap 55, stage ends 56
+        eng.update_stages(p, 189, 55)
+        eng.stage_break_start(p, 55)
+        self.assertEqual(eng.stage_break, 56)
+
+    def test_caution_that_is_still_out_at_the_stage_end_is_the_break(self):
+        # window 0 (long call lead): missed at the yellow, caught when the leader reaches the stage's last lap
+        eng = StrategyEngine(random.Random(1))
+        p = self.params(stage_early=0, stage_call_lead=9, stage_ends=(56, 118))
+
+        def cars(lap, flag):
+            return race([car(0, laps_done=lap)], flag=flag, lap=lap + 1, total=189)
+        eng.tick(cars(50, GREEN), p)
+        eng.tick(cars(54, CAUTION), p)
+        self.assertIsNone(eng.stage_break)
+        eng.state(0).decision = False
+        eng.tick(cars(55, CAUTION), p)
+        self.assertEqual(eng.stage_break, 56)
+        self.assertTrue(eng.state(0).decision)                  # called again, as a stage break: pit
+        eng.tick(cars(60, GREEN), p)
+        self.assertIsNone(eng.stage_break)
+
+    def test_late_break_leaves_cars_that_already_stopped_alone(self):
+        eng = StrategyEngine(random.Random(1))
+        p = self.params(stage_early=0, stage_call_lead=9, stage_ends=(56, 118))
+
+        def cars(lap, flag):
+            return race([car(0, laps_done=lap), car(1, laps_done=lap)], flag=flag, lap=lap + 1, total=189)
+        eng.tick(cars(50, GREEN), p)
+        eng.tick(cars(54, CAUTION), p)
+        done = eng.state(0)
+        done.post_stop_lock, done.decision, done.done_service = True, True, FOUR_TIRES
+        eng.tick(cars(55, CAUTION), p)
+        self.assertEqual(eng.stage_break, 56)
+        self.assertTrue(done.post_stop_lock)
+        self.assertEqual(done.done_service, FOUR_TIRES)         # not sent back in
+
+    def test_car_serviced_before_the_break_does_not_flip(self):
+        flips = 0
+        for seed in range(40):
+            eng = StrategyEngine(random.Random(seed))
+            p = self.params(flip_pct=100)
+            eng.update_stages(p, 240, 70)
+            eng.lap_now, eng.lap_total = 70, 240
+            st = eng.state(0)
+            st.last_stop_lap, st.stage_serviced = 40, 80
+            lap = eng.plan_stage(st, p, 80, 70, 0, 80, CarInfo(20, 0, 0, 1.0, 0.3), 0.0, 60, 170)
+            flips += isinstance(lap, int)
+        self.assertEqual(flips, 0)
+
+    def test_a_stop_at_the_break_is_stamped_as_its_service(self):
+        eng = StrategyEngine(random.Random(1))
+        p = self.params(stage_ends=(80, 160))
+        st = eng.state(0)
+
+        def cars(lap, pit=0, flag=GREEN):
+            return race([car(0, laps_done=lap, pitting=pit)], flag=flag, lap=lap + 1, total=240)
+        eng.tick(cars(70), p)
+        eng.tick(cars(78, flag=CAUTION), p)                      # 2 laps before the end: the break (auto window)
+        self.assertEqual(eng.stage_break, 80)
+        eng.tick(cars(78, pit=1, flag=CAUTION), p)
+        self.assertEqual(st.stage_serviced, 80)
+
+    def test_double_back_percent(self):
+        def call(pct, seed):
+            eng = StrategyEngine(random.Random(seed))
+            p = self.params(stage_double_back_pct=pct)
+            eng.update_stages(p, 240, 81)
+            eng.lap_now, eng.lap_total = 81, 240
+            eng.stage_break_start(p, 81)
+            st = eng.state(0)
+            st.stage_serviced, st.stops = 80, 1                 # took the service at the caution just before
+            info = CarInfo(5, 0, 0, 1.0, 0.3)
+            eng.caution_decision(car(0), st, info, {0: info}, race([], flag=CAUTION), p, True, 160, 50, 50,
+                                 fuel_left=55)
+            return st.decision
+        self.assertFalse(any(call(0, s) for s in range(30)))    # nobody doubles back
+        self.assertTrue(all(call(100, s) for s in range(30)))   # everybody does
+        mixed = sum(call(10, s) for s in range(200))
+        self.assertTrue(5 <= mixed <= 40, mixed)                # about 10 %
+
+    def test_new_stage_settings_round_trip_through_presets(self):
+        p = Preset.from_dict({"stage_call_lead": 2.5, "stage_double_back_pct": 40})
+        q = Preset.from_dict(p.to_dict())
+        self.assertEqual((q.stage_call_lead, q.stage_double_back_pct), (2.5, 40))
+        self.assertEqual((Preset().stage_call_lead, Preset().stage_double_back_pct), (1.0, 10))
 
     def test_flip_stop_then_stays_out_in_a_full_tick_run(self):
         eng = StrategyEngine(random.Random(1))
