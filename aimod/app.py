@@ -14,8 +14,11 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from . import memory_map as mm
 from .game import Game
 from .adjust import CrewChief
-from .behavior import SAVE_FUEL, BehaviorConfig, BehaviorEngine, gather as behavior_inputs
-from .behavior_mem import BehaviorWriter
+from .behavior import SAVE_FUEL, BehaviorConfig, BehaviorEngine, gather as behavior_inputs, set_temperaments
+from .behavior_mem import AggressionWriter, BehaviorWriter
+from . import aggression as agg
+from . import showdown_lock
+from .aggtrace import AggTrace
 
 CHASSIS_VALUE = 5878 + 12 * 10                    # car block: the session value of the chassis rating
 from .aisetup import ai_setup
@@ -33,7 +36,8 @@ from .companion_art import AUTO, ArtData, companion_dir
 from .crewview import CrewView
 from .humancalls import Desk
 from .radio import Radio, tv_slot
-from .radio_overlay import TalkIndicator
+from .radio_overlay import RivalIndicator, TalkIndicator
+from .carno import CarNo
 from .radio_tab import RadioTab
 from .scrollframe import scrolled
 from .tiremodel import TireModel
@@ -223,13 +227,17 @@ PARAM_FIELDS = {  # key: (label, type, tooltip)
                           "Size of every behavior's effect. 100 = the tested sizes (saving tires: about 1.5 % less "
                           "cornering grip and 25 % less wear; saving fuel: 2 % less power and 15 % less fuel; "
                           "pushing: 1.5 % more grip, 25 % more wear, 8 % more fuel). Default 70. 50 = half, 200 = double."),
+    "agg_strength": ("Racing intensity strength (%)", int,
+                     "How far the race pushes each driver from his own aggression. 0 = his own value always, 70 = "
+                     "default, 100 = the full sizes (late in a stage x1.2, a battle +0.6, for the lead +0.9, rivals "
+                     "up to 3.0), 150 max. More = closer racing, more contact, more cautions."),
     "behavior_late_pct": ("Final push — last (%) of the race", int,
                           "In this final share of the race every car that has the fuel pushes (not the ones that "
                           "must save to finish). 10 = the last 10 %. 0 = off."),
 }
 BOOL_FIELDS = ("oem_strategy", "stint_strategy", "lapped_wave",
                "team_strategy", "follow_player", "behavior_on", "behavior_reactions",
-               "behavior_teams", "green_fuel_aggressive")
+               "behavior_teams", "rivals_on", "rivals_list", "rivals_teammates", "rivals_retaliate", "rivals_player", "green_fuel_aggressive")
 
 log = logging.getLogger("aimod")
 
@@ -287,6 +295,17 @@ class App:
         self.engine.crew_chief = CrewChief()          # chassis adjustments on AI stops (from the AI setup)
         self.behavior = BehaviorEngine()                # driver behavior: save fuel / tires, cool tires, push
         self.behavior_writer = BehaviorWriter()
+        self.intensity = agg.IntensityEngine()          # racing intensity & rivals: each AI car's aggression
+        self.agg_writer = AggressionWriter(os.path.join(self.base, "aggression_restore.json"))
+        self._agg_mode = agg.OFF                        # the mode the writer last ran in
+        self.contacts = agg.ContactWatcher()
+        self.rivals = agg.RivalBook()
+        self.agg_trace = AggTrace(os.path.join(self.base, "logs"))
+        self._rival_onscreen = None                      # (car, rival, kind, level) for the rivals overlay
+        self.rival_ind_cfg = self.settings.setdefault("rival_indicator", {})
+        for k, v in (("on", True), ("x", 40), ("y", 160), ("size", 1.0), ("opacity", 0.85)):
+            self.rival_ind_cfg.setdefault(k, v)
+        self._agg_reset_race()
         self._chassis_base: dict[int, float] = {}    # car slot -> its session chassis rating (before adjustments)
         self._model_saved = time.monotonic()
         self.feed = CompanionFeed(self.settings["companion_host"], self.settings["companion_port"])
@@ -374,6 +393,8 @@ class App:
             self.pitboard.show()
         self.talk_ind = TalkIndicator(self.root, self.radio, artdata=self.artdata, on_moved=self._save_settings)
         self.radio_tab.indicator = self.talk_ind
+        self.rival_ind = RivalIndicator(self.root, self.rival_ind_cfg, self._rival_onscreen_info, artdata=self.artdata,
+                                        on_moved=self._save_settings)
         if self.settings["use_companion"]:
             self._sync_companion_widget()
         self.root.after(TICK_MS, self.tick)
@@ -798,6 +819,62 @@ class App:
         self._entry_row(bf, 4, "behavior_late_pct")
         bf.columnconfigure(1, weight=1)
 
+        af = ttk.LabelFrame(parent, text="Racing intensity & rivals (test)", padding=8)
+        af.pack(fill="x", pady=(8, 0))
+        ttk.Label(af, text="Mode", style="Panel.TLabel").grid(row=0, column=0, sticky="w", pady=2)
+        self.vars["agg_mode"] = tk.StringVar(value="off")
+        cmb = ttk.Combobox(af, textvariable=self.vars["agg_mode"], values=agg.MODES, width=8, state="readonly")
+        cmb.grid(row=0, column=1, sticky="e", pady=2)
+        cmb.bind("<<ComboboxSelected>>", lambda e: self._on_param_change())
+        Tooltip(cmb, "How hard each AI driver races the cars around him (his aggression: how much room he leaves "
+                     "side by side). Patient early in a stage, harder towards the stage end and the finish, harder "
+                     "still when racing a car within half a second (any position, more for the lead); damaged cars "
+                     "protect the car, a car right behind his teammate doesn't attack him, a car about to be "
+                     "lapped gives room. Works on its own (Driver behavior can be off).\n"
+                     "off = the game's own values. shadow = decides and logs (AGGRESSION lines in aimod.log), "
+                     "writes nothing - run a race in shadow first. on = written to the game; every driver gets his "
+                     "own value back when AIMOD closes, the mode changes or a new session starts. Your car and the "
+                     "pace car are never touched. Can stack with AI Enhanced's High Intensity.")
+        self._entry_row(af, 1, "agg_strength")
+        check(af, "rivals_on", "Rivals: grudges, feuds and retaliation",
+              "Contact in the race makes rivals. One run-in: the driver who got hit may hold a grudge (his "
+              "temperament decides; a calm one lets it go). Every separate run-in of the same two cars raises their "
+              "feud, both ways (up to 3 levels, aggression up to 3.0 when they meet on track). A caution that "
+              "comes out right after one of their run-ins settles it. Outside the top 10 drivers race a bit "
+              "calmer, unless the same car keeps getting into them.", 2)
+        check(af, "rivals_retaliate", "Retaliation: wrecked beyond repair -> he goes through him",
+              "A driver wrecked by another car (damage at the game's must-repair level in one run-in) whose "
+              "repair stop can't fix it all goes after that car: aggression up to 4.0 when they meet, until "
+              "their run-in brings out a caution. Untested above 3.0 - watch it.", 3)
+        check(af, "rivals_teammates", "Teammates can become rivals",
+              "Run-ins between teammates count like any other. Off = only teammates in the rivals list.", 4)
+        check(af, "rivals_list", "Rivals list (Rivals... button, per mod)",
+              "The rivalries you set up in the Rivals... window (two car numbers a box, saved per NR2003 mod) "
+              "are rivals from the start of every race; their run-ins raise the feud from there.", 5)
+        check(af, "rivals_player", "AI drivers can hold it against your car",
+              "Off by default. On: run-ins with your car count, and the AI driver races you harder (only his "
+              "value changes - your car is never touched).", 6)
+        b = ttk.Button(af, text="Rivals...", command=self._edit_rivals)
+        b.grid(row=7, column=0, columnspan=2, sticky="we", pady=(4, 0))
+        Tooltip(b, "Set up rivalries: drag car numbers into boxes of two, like the Teams window. Saved per "
+                   "NR2003 mod (not per preset).")
+        ind = tk.Frame(af, bg=self.root.cget("bg"))
+        ind.grid(row=8, column=0, columnspan=2, sticky="we", pady=(4, 0))
+        self.var_rival_ind = tk.BooleanVar(value=bool(self.rival_ind_cfg.get("on", True)))
+        cb = ttk.Checkbutton(ind, text="Show rivals on screen", variable=self.var_rival_ind,
+                             command=self._rival_ind_toggle)
+        cb.pack(side="left")
+        Tooltip(cb, "While the car on the TV camera is racing his rival close by (or someone is going after "
+                    "him), both number cards show over the game with what it is: GRUDGE, FEUD L2, RIVALS or "
+                    "RETALIATION. See-through and click-through, like the scanner's talk indicator. Not a "
+                    "preset setting.")
+        self.var_rival_move = tk.BooleanVar(value=False)
+        cb = ttk.Checkbutton(ind, text="Move", variable=self.var_rival_move,
+                             command=lambda: self.rival_ind.set_moving(bool(self.var_rival_move.get())))
+        cb.pack(side="left", padx=(10, 0))
+        Tooltip(cb, "Shows a sample over the game: drag it where you want it, then untick Move.")
+        af.columnconfigure(1, weight=1)
+
         xf2 = ttk.LabelFrame(parent, text="Other apps (optional)", padding=8)
         xf2.pack(fill="x", pady=(8, 0))
         self.var_sf = tk.BooleanVar(value=self.settings["use_companion"])
@@ -954,6 +1031,7 @@ class App:
         self.vars["stages"].set(str(p.stages) if p.stages >= 2 else "off")
         self.vars["stage_by"].set("% of race" if p.stage_by == "percent" else "laps")
         self.vars["stage_ends"].set(p.stage_ends)
+        self.vars["agg_mode"].set(p.agg_mode)
         self._loading = False
         self.params = p
         self._on_param_change()
@@ -981,6 +1059,9 @@ class App:
         p.stages = int(st) if st.isdigit() else 0
         p.stage_by = "percent" if self.vars["stage_by"].get().startswith("%") else "laps"
         p.stage_ends = self.vars["stage_ends"].get().strip()
+        mode = self.vars["agg_mode"].get()
+        p.agg_mode = mode if mode in agg.MODES else agg.OFF
+        p.agg_strength = min(150, p.agg_strength)
         vals = parse_stage_ends(p.stage_ends)
         ok = p.stages < 2 or (vals is not None and len(vals) == p.stages - 1
                               and (p.stage_by != "percent" or all(v < 100 for v in vals)))
@@ -1102,6 +1183,7 @@ class App:
         self.engine.crew_chief.reset(setup)
         ratings = {}
         profiles = {}
+        agg_vals, agg_names = {}, {}
         if self.game.pm is not None and self.mod:
             from .crewchief import CrewChiefProfile
             for path in self.game.session_car_files(self.mod):
@@ -1109,12 +1191,20 @@ class App:
                 if not info:
                     continue
                 num = info["number"]
+                agg_vals[int(num)] = info.get("driver_aggression")
+                agg_names[int(num)] = info.get("name", "")
                 if info.get("pitcrew_speed") is not None:
                     ratings[num] = (info["pitcrew_speed"] + (info.get("pitcrew_consistency")
                                                              or info["pitcrew_speed"])) / 2
                 profiles[num] = CrewChiefProfile.from_car_info(info, driver_name=info.get("name", ""))
         self.engine.crew_rating = ratings
         self.engine.cc_profiles = profiles
+        # each driver's temperament (who manages his tires, who short-pits, who holds a grudge): his .car aggression's
+        # place in this field; the name hash for cars without one
+        set_temperaments(agg.temperaments(agg_vals, agg_names) if agg_vals else {})
+        if agg_vals:
+            log.info("Temperaments from the .car aggression for %d cars (%d without one use the name)",
+                     sum(v is not None for v in agg_vals.values()), sum(v is None for v in agg_vals.values()))
         if setup:
             log.info("AI setup for %s: wedge %+d lb, track bar %.2f/%.2f in, tape %d%%, RR %.1f psi "
                      "(%d crew ratings)", self.track, setup["wedge"], *setup["track_bar"], setup["tape"],
@@ -1248,7 +1338,15 @@ class App:
                     self.engine.reset()
                     self.behavior.reset()
                     self.behavior_writer.reset()
+                    self.intensity.reset()
+                    self.agg_writer.reset()
                     self.game.apply_patches(self.settings["patches"])
+                    if self.game.write_enabled:
+                        # an AIMOD that closed without restoring left aggression values in this same game
+                        n = self.agg_writer.recover(self.game.pm, self.game.session_names())
+                        if n:
+                            log.info("Racing intensity: own aggression values put back on %d cars (left by an "
+                                     "earlier AIMOD)", n)
             self.lbl_patch.configure(text=self.game.patch_status)
             return
 
@@ -1438,14 +1536,266 @@ class App:
         for r in res.rows:
             m = out.modes.get(r.idx)
             r.behavior = m[0] if m else ""
+        try:
+            self._intensity_tick(snap, ctx, cars)
+        except Exception:                        # racing intensity must never stop the strategy tick
+            now = time.monotonic()
+            if now - getattr(self, "_intensity_error", 0.0) > 60:
+                self._intensity_error = now
+                log.exception("Racing intensity failed (repeats are logged once a minute)")
+
+    def _intensity_tick(self, snap, ctx, cars):
+        """Racing intensity & rivals: each AI car's working aggression, from the race phase, who he is racing, his
+        damage and his teammates (aggression.py). SHADOW decides and logs, writes nothing."""
+        p = self.params
+        pm = self.game.pm
+        mode = p.agg_mode if p.agg_mode in agg.MODES else agg.OFF
+        if mode != agg.OFF and not (self.game.write_enabled and self.agg_writer.available(pm)):
+            mode = agg.OFF
+        if mode != self._agg_mode:
+            n = self.agg_writer.restore(pm)          # every car back to his own value before the new mode
+            self.intensity.reset()
+            log.info("Racing intensity: %s%s", mode.upper(),
+                     f" (own values back on {n} cars)" if n else "")
+            self._agg_mode = mode
+        cfg = self.intensity.cfg
+        cfg.mode, cfg.strength, cfg.teams = mode, p.agg_strength, p.behavior_teams
+        self.engine.rival_events = []
+        self._rival_onscreen = None
+        if mode == agg.OFF:
+            return
+        w = self.agg_writer
+        held_nums = showdown_lock.read()                      # toolsggression_probe.py --showdown owns these cars
+        if held_nums:
+            slots = [c.idx for c in cars if int(c.number) in held_nums]
+            if set(slots) - w.held:
+                n = w.hold(pm, slots)
+                log.info("Racing intensity: showdown probe has cars %s - their own values back (%d written), "
+                         "left alone until it is done", sorted(held_nums), n)
+            else:
+                w.hold(pm, slots)
+        elif w.held:
+            w.unhold()
+            log.info("Racing intensity: showdown probe is done - the cars are mine again")
+        now = time.monotonic()
+        t = snap.session_time if getattr(snap, "session_time", 0) > 0 else now
+        lap = self.engine.lap_now
+        tag = " [shadow]" if mode == agg.SHADOW else ""
+        if ctx.race and ctx.green and snap.laps_done >= 1:     # after the game's start roll
+            n = w.capture(pm, [c.idx for c in cars], self.game.session_names())
+            if n:
+                if self._agg_seed is None:                   # a new race: new rivals, a new seed for their dice
+                    import random
+                    self._agg_seed = random.SystemRandom().randrange(1 << 30)
+                    self.rivals.reset(self._agg_seed)
+                    self.contacts.reset()
+                self.agg_trace.open(self.track)              # (at once: nothing of the race is missed)
+                self._agg_new, self._agg_new_t = self._agg_new + n, now
+        if self._agg_new and now - self._agg_new_t > 2.0:      # (cars come in over a second or two: one line)
+            vals = sorted(w.orig.values())
+            log.info("Racing intensity: own aggression of %d cars taken (%.2f-%.2f), rivals seed %s%s", len(vals),
+                     vals[0], vals[-1], self._agg_seed, tag)
+            self.agg_trace.row(time=AggTrace.stamp(), game_s=t, lap=lap, event="capture", mode=mode,
+                               detail=f"{len(vals)} cars {vals[0]:.3f}-{vals[-1]:.3f} seed {self._agg_seed}")
+            self._agg_new = 0
+        if not w.captured:
+            return
+        names = {c.idx: (c.number, c.name) for c in cars}
+        for s, old, new in w.rerolls(pm):
+            num, name = names.get(s, ("?", f"slot {s}"))
+            log.info("AGGRESSION: #%s %s rolled again by the game %.3f -> %.3f (his own value now)", num, name,
+                     old, new)
+            self.agg_trace.row(time=AggTrace.stamp(), game_s=t, lap=lap, event="reroll", car=num, driver=name,
+                               old=old, new=new, mode=mode)
+
+        # rivals: who has it in for whom (run-ins, the list, cautions that settle a pair)
+        book = self.rivals
+        book.teammates, book.retaliation = p.rivals_teammates, p.rivals_retaliate
+        book.teams = {int(c.number): c.team for c in cars}
+        pairs = self._rival_pairs() if p.rivals_list else set()
+        if pairs != book.pairs:
+            book.set_pairs(pairs)
+        player = self._player_car(snap) if p.rivals_player else None
+        book.player = int(player.number) if player is not None else None
+        temper = {int(c.number): c.temper for c in cars}
+        green = snap.flag == mm.FLAG_GREEN
+        ev = []
+        if ctx.race:
+            if green and self._agg_prev_flag == mm.FLAG_GREEN:
+                self._agg_stats["green_s"] += max(0.0, min(5.0, t - self._agg_prev_t))
+            for con in self.contacts.update(t, snap.cars, green):
+                if held_nums and (int(con.na) in held_nums or int(con.nb) in held_nums):
+                    continue                                  # the showdown's own contacts are no race run-ins
+                boosted = any((st := self.intensity.state.get(i)) is not None and st.target is not None
+                              and st.target > w.orig.get(i, 99.0) + 0.05 for i in (con.a, con.b))
+                self._agg_stats["contacts"] += 1
+                self._agg_stats["boosted_contacts"] += boosted
+                agg_num = con.na if con.aggressor == con.a else con.nb if con.aggressor == con.b else ""
+                self.agg_trace.row(time=AggTrace.stamp(), game_s=t, lap=lap, event="contact", car=con.na,
+                                   other=con.nb, old=con.da, new=con.db, mode=mode,
+                                   detail=(f"aggressor #{agg_num}" if agg_num != "" else "side by side")
+                                   + (", boosted" if boosted else ""))
+                if p.rivals_on:
+                    ev += book.runin(con, lap, temper, boosted)
+            if p.rivals_on:
+                if self._agg_prev_flag == mm.FLAG_GREEN and not green:
+                    ev += book.caution(t, lap)
+                ev += book.update(lap, {int(c.number): (c.damage, c.on_track) for c in cars})
+        self._agg_prev_flag, self._agg_prev_t = snap.flag, t
+        out = self.intensity.tick(ctx, cars, w.orig, book if p.rivals_on else None,
+                                  [player] if player is not None else [], temper)
+
+        by_num = {int(c.number): c for c in cars}
+        for e in ev:
+            self._agg_stats[e.kind] = self._agg_stats.get(e.kind, 0) + 1
+            h, o = by_num.get(e.holder), by_num.get(e.other)
+            hn = f"#{e.holder} {h.name}" if h else f"#{e.holder}"
+            on = f"#{e.other} {o.name}" if o else f"#{e.other}"
+            text = {"runin": f"run-in {hn} / {on} ({e.detail})",
+                    "grudge": f"{hn} holds a grudge against {on}",
+                    "feud": f"{hn} and {on}: feud level {e.level} ({e.detail})",
+                    "wrecked": f"{hn} wrecked by {on} ({e.detail}) - retaliation if his stop can't fix it",
+                    "retaliate": f"{hn} is going after {on} ({e.detail})",
+                    "settled": f"{hn} and {on}: settled ({e.detail})",
+                    "governor": f"governor: {e.detail}"}.get(e.kind, e.kind)
+            if e.kind != "runin":
+                log.info("RIVALS lap %d: %s%s", e.lap or lap, text, tag)
+            self.agg_trace.row(time=AggTrace.stamp(), game_s=t, lap=e.lap or lap, event=e.kind, car=e.holder,
+                               driver=h.name if h else "", other=e.other, mode=mode, detail=e.detail,
+                               reasons=f"level {e.level}")
+            for num in (e.holder, e.other):
+                c = by_num.get(num)
+                if c is not None:
+                    self.engine.rival_events.append((c.idx, e))
+        for ch in out.changes:
+            self._agg_stats["changes"] += 1
+            self.agg_trace.row(time=AggTrace.stamp(), game_s=t, lap=lap, event="change", car=ch.number,
+                               driver=ch.name, own=ch.base, old=ch.old, new=ch.new, reasons=ch.reasons, mode=mode,
+                               gap=ch.gap if ch.gap is not None else "")
+            if any(k in ch.reasons for k in ("grudge:", "feud:", "rival:", "retaliate:")):
+                gap = f", {ch.gap:.2f} s" if ch.gap is not None else ""
+                log.info("AGGRESSION lap %d: #%s %s %.2f -> %.2f (%s%s; own %.2f)%s", lap, ch.number, ch.name,
+                         ch.old, ch.new, ch.reasons, gap, ch.base, tag)
+        for v in out.targets.values():
+            self._agg_stats["peak"] = max(self._agg_stats["peak"], v)
+        stage = agg.phase(ctx.lap_now, ctx.total, ctx.stage_ends).stage if ctx.race else self._agg_stage
+        if self._agg_stage is not None and stage != self._agg_stage:
+            self._agg_summary(f"stage {self._agg_stage}")
+        self._agg_stage = stage
+        w.apply(pm, out.targets, shadow=(mode == agg.SHADOW))
+        if p.rivals_on:
+            self._update_rival_onscreen(pm, snap.cars)
+
+    def _agg_reset_race(self):
+        self._agg_seed = None
+        self._agg_new, self._agg_new_t = 0, 0.0
+        self._agg_prev_flag, self._agg_prev_t = None, 0.0
+        self._agg_stage = None
+        self._agg_stats = {"changes": 0, "contacts": 0, "boosted_contacts": 0, "green_s": 0.0, "peak": 0.0}
+
+    def _agg_summary(self, what: str):
+        """One aimod.log line per stage: how hard they raced, contact rate, rivals."""
+        s = self._agg_stats
+        if not s["changes"] and not s["contacts"]:
+            return
+        mins = s["green_s"] / 60.0
+        rate = f"{10 * s['contacts'] / mins:.1f} per 10 green min" if mins > 0.5 else "-"
+        riv = ", ".join(f"{k} {s[k]}" for k in ("grudge", "feud", "wrecked", "retaliate", "settled", "governor")
+                        if s.get(k))
+        log.info("Racing intensity %s: %d changes, peak %.2f; contacts %d (%s, %d with a boosted car)%s", what,
+                 s["changes"], s["peak"], s["contacts"], rate, s["boosted_contacts"],
+                 f"; rivals: {riv}" if riv else "")
+        self.agg_trace.row(time=AggTrace.stamp(), event="summary", detail=f"{what}: {s}")
+        for k in list(s):
+            s[k] = 0.0 if k in ("green_s", "peak") else 0
+
+    def _rival_pairs(self) -> set:
+        """The loaded mod's rivalries (Rivals... window), as car-number pairs."""
+        from .rivals_ui import normalize as normalize_rivals
+        saved = (self.settings.get("rivals_by_mod") or {}).get(self._series_key()) or []
+        return {agg.pair_key(a, b) for a, b in normalize_rivals(saved)}
+
+    def _edit_rivals(self):
+        from .rivals_ui import RivalsDialog
+        cars = [c for c in (self._last_snap.cars if self._last_snap else []) if c.valid and c.number > 0]
+        colors = {c.number: (self.artdata.color(c.number) or
+                             {"chevrolet": "#c99a2e", "dodge": "#b3122e", "ford": "#1f4e9c",
+                              "toyota": "#d7261e"}.get((c.make or "").lower(), "#3a3a3a")) for c in cars}
+        pairs = (self.settings.get("rivals_by_mod") or {}).get(self._series_key()) or []
+
+        def save(new_pairs):
+            self.settings.setdefault("rivals_by_mod", {})[self._series_key()] = new_pairs
+            self._save_settings()
+            log.info("Rivals for %s: %s", self._series_key(),
+                     "; ".join(f"#{CarNo(a)} vs #{CarNo(b)}" for a, b in new_pairs) or "none")
+        RivalsDialog(self.root, [c.number for c in cars], pairs, colors, save,
+                     title=f"Rivals - {self._series_key()}")
+
+    def _rival_ind_toggle(self):
+        self.rival_ind_cfg["on"] = bool(self.var_rival_ind.get())
+        self._save_settings()
+
+    def _rival_onscreen_info(self):
+        """(TV car, his rival, kind, level) while the car on the TV camera races his rival close by, else None."""
+        return self._rival_onscreen
+
+    def _update_rival_onscreen(self, pm, cars):
+        self._rival_onscreen = None
+        if not self.rival_ind_cfg.get("on", True):
+            return
+        tv = tv_slot(pm) if pm is not None else None
+        if tv is None:
+            return
+        by_idx = {c.idx: c for c in cars}
+        me = by_idx.get(tv)
+        if me is None:
+            return
+        st = self.intensity.state.get(tv)
+        cands = []
+        if st is not None and st.rival is not None and st.target is not None:
+            cands.append((st.rival[1], st.rival[0]))
+        for idx, o in self.intensity.state.items():          # someone close by going after the TV car
+            c = by_idx.get(idx)
+            if c is not None and o.rival is not None and o.target is not None and o.rival[1] == me.number:
+                cands.append((c.number, o.rival[0]))
+        hit = None
+        for num, kind in cands:
+            other = next((c for c in cars if c.number == num and c.valid), None)
+            if other is not None and agg.close_enough_for_screen(me, other, cars):
+                hit = (me.number, num, kind)             # (a rival a few cars away is not the picture on screen)
+                break
+        if hit is None:
+            return
+        f = self.rivals.feuds.get(agg.pair_key(hit[0], hit[1]))
+        self._rival_onscreen = (CarNo(int(hit[0])), CarNo(int(hit[1])), hit[2], f.level if f else 0)
+
+    def _player_car(self, snap):
+        """The player's car as a behavior.Car (player rivals: for who is near whom; never written)."""
+        from .behavior import Car
+        pc = next((c for c in snap.cars if c.idx == mm.PLAYER_SLOT and c.valid), None)
+        ps = self.engine.prog_state.get(mm.PLAYER_SLOT)
+        if pc is None or ps is None or pc.number <= 0:
+            return None
+        return Car(mm.PLAYER_SLOT, pc.number, pc.name, lap=pc.laps_done + 1, progress=ps[0] + ps[2] + ps[1],
+                   on_track=not pc.on_pit_road and not pc.reason_out)
 
     def _behavior_restore(self):
         if self.game.pm is not None and self.game.write_enabled:
             n = self.behavior_writer.restore(self.game.pm)
             if n:
                 log.info("Driver behavior: game pace values restored on %d cars", n)
+            n = self.agg_writer.restore(self.game.pm)
+            if n:
+                log.info("Racing intensity: own aggression values back on %d cars", n)
         else:
             self.behavior_writer.reset()
+            self.agg_writer.restore(None)            # nothing can be written: the restore file stays
+        if self._agg_stage is not None:
+            self._agg_summary(f"stage {self._agg_stage} (end)")
+        self.agg_trace.close()
+        self._agg_reset_race()
+        self.contacts.reset()
+        self.intensity.reset()
         self.behavior.reset()
         self.engine.behavior_cars = set()
         self.engine.behavior_switches = []
@@ -2657,6 +3007,7 @@ class App:
         self.engine.reset()
         self.radio.stop()
         self.talk_ind.close()
+        self.rival_ind.close()
         self.tire_model.save()
         self.board_server.stop()
         self.game.detach(restore_patches=self.var_restore.get())

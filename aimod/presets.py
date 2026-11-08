@@ -74,6 +74,13 @@ class Preset:
     behavior_late_pct: int = 10     # final % of the race in which everyone who can pushes (0 = off)
     behavior_reactions: bool = True # on-the-fly changes: lead battles, staying on the lead lap, tires, dirty air
     behavior_teams: bool = True     # teammates don't fight; drafting packs save / push with their team or make
+    agg_mode: str = "off"           # racing intensity & rivals: off | shadow (log only) | on
+    agg_strength: int = 70          # % of the intensity changes (0 = the game's own values, 150 max)
+    rivals_on: bool = True          # rivals from run-ins: grudges, feuds that escalate, retaliation (with agg_mode)
+    rivals_list: bool = True        # + the pairs in app\rivals.txt
+    rivals_teammates: bool = True   # teammates can become rivals too
+    rivals_retaliate: bool = True   # wrecked beyond repair -> drives through the car that did it (up to 4.0)
+    rivals_player: bool = False     # AI drivers can hold it against your car (only their values change)
     tracks: list[str] = field(default_factory=list)
     notes: str = ""
 
@@ -106,6 +113,12 @@ class Preset:
         p.flip_pct = int(max(0, min(100, p.flip_pct)))
         p.behavior_strength = int(max(0, min(200, p.behavior_strength)))
         p.behavior_late_pct = int(max(0, min(50, p.behavior_late_pct)))
+        if p.agg_mode not in ("off", "shadow", "on"):
+            p.agg_mode = "off"
+        try:
+            p.agg_strength = int(max(0, min(150, float(p.agg_strength))))
+        except (TypeError, ValueError):
+            p.agg_strength = 70
         p.tracks = [str(t) for t in (p.tracks or [])]
         return p
 

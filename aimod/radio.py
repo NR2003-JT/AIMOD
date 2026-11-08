@@ -630,6 +630,29 @@ BEHAVIOR_TRIGGERS = {"fuel_finish": "behave_fuel", "fuel_stage": "behave_fuel", 
                      "done_tires": "behave_done"}
 BEHAVIOR_URGENT = {"lead_attack", "lead_defend", "lapping", "late", "fuel_finish"}   # said whatever the spacing
 
+# Rivals (racing intensity): (crew lines, driver lines) per event, for the car the event is about. {other} = the
+# other car's number, {level} = the feud level. "retaliate_target" / "feud" / "settled" are also said to the other car.
+RIVAL_LINES = {
+    "grudge": (("That was the {other} that got into you. Remember that number.",
+                "The {other} roughed you up there. Don't let him do it again."),
+               ("He did that on purpose. I won't forget it.", "Okay. I've got a long memory.")),
+    "feud": (("That's {level} times now with the {other}. Don't give him an inch.",
+              "The {other} again. Race him hard, he's earned it."),
+             ("Same guy again. I'm done being nice to him.",)),
+    "wrecked": (("The {other} wrecked us. Bring it in, let's see what we can fix.",
+                 "That's the {other}'s doing. Get it to pit road, we'll fix what we can."),
+                ()),
+    "retaliate": (("Car's not right after what the {other} did. Do what you gotta do.",
+                   "We can't fix all of it. The {other} is out there, you know what he did."),
+                  ("He wrecked me. He's gonna get it back.", "I'm gonna find the {other}.")),
+    "retaliate_target": (("Watch the {other}. He's not happy with you, he's coming.",
+                          "Heads up, the {other} is out for you."),
+                         ()),
+    "settled": (("That's enough with the {other}. Let it go, we've got a race to run.",
+                 "Okay, that one's settled. Focus on your own race now."),
+                ()),
+}
+
 
 class _Blank(dict):
     def __missing__(self, key):
@@ -975,6 +998,7 @@ class CarRadio:
         self._status(car, me, p)
         if car.controlled:
             self._behavior(car, engine, green)
+            self._rivals(car, engine)
         self._own_stop(car, me, engine, snap)
         self._others(res, me, car, green)
         if car.controlled:
@@ -1158,6 +1182,24 @@ class CarRadio:
                                                                                      "COOL TIRES") else None
                 if ack:
                     self.say("behavior", DRIVER, self.driver_line(ack), prio, 10, "behave_ack")
+
+    def _rivals(self, car, engine):
+        """Racing intensity & rivals: the crew (and the driver) on a grudge, a feud, a wreck, retaliation or a
+        settled feud of this AI car. Only AI cars: the player's driver never speaks."""
+        for idx, e in getattr(engine, "rival_events", ()) or ():
+            if idx != self.slot:
+                continue
+            mine = int(e.holder) == int(car.number)
+            key = e.kind if mine else {"retaliate": "retaliate_target", "feud": "feud",
+                                       "settled": "settled"}.get(e.kind)
+            if key not in RIVAL_LINES:
+                continue
+            crew, driver = RIVAL_LINES[key]
+            other = e.other if mine else e.holder
+            vals = {"other": carno.label(carno.CarNo(int(other))), "level": e.level}
+            self.say("behavior", CREW, pick(*crew).format(**vals), HIGH, 15, "rival")
+            if driver and mine:
+                self.say("behavior", DRIVER, pick(*driver).format(**vals), NORMAL, 12, "rival_drv")
 
     def driver_line(self, kind: str) -> str:
         built_in = pick(*DRIVER_LINES[kind][1 if self.cfg.get("driver_swears") else 0])

@@ -96,6 +96,12 @@ DRV_DRAG = 0x12C
 DRV_POWER = 0x130
 DRV_TRACTION = 0x134
 DRIVER_MULT_CHECK = (0x4F6FDD, bytes([0xD9, 0x99, 0x34, 0x01, 0x00, 0x00]))   # fstp [ecx+0x134] in 0x4F6E90
+# Driver aggression (.car rating k = 0 of the triplets at driver +0x30: mean, deviation, working value). The working
+# value is read only by the car-next-to-car code (0x530110 / classifier 0x53244A); the game rolls it once at the session
+# start (mean + a draw from the deviation) and never writes it in the race (live 2026-11-03/05, 42/42 cars, writes held).
+OFF_AGG_MEAN = OFF_DRIVER + 0x30           # car + 0x16EE
+OFF_AGG_WORK = OFF_DRIVER + 0x38           # car + 0x16F6
+AGG_CODE_CHECK = (0x5302A2, bytes([0xD9, 0x86, 0xF6, 0x16, 0x00, 0x00]))   # fld [esi+0x16F6] in 0x530110
 OFF_PITTING = 8118             # byte  - 1 = pit requested / in pit sequence
 # The game's own reasons for a stop (its "pit now?" check, 0x40B5D0): +8119 = stop to serve a penalty;
 # +4943 = a car condition the game pits for when it reaches its limit (damage / mechanical).

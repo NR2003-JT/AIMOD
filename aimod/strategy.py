@@ -1005,7 +1005,7 @@ class StrategyEngine:
         if self.behavior_on and not self.drafting and self._style_name:
             # one tendency for both (user, 2026-10-28): a driver who manages his tires stretches the run, an
             # aggressive one pushes early and short-pits. Weights, not rules: most of the time, not always.
-            temper = temperament(self._style_name)
+            temper = temperament(self._style_name, getattr(self, "_style_car_number", None))
             if manager_score(rating, temper, 60) >= MANAGE_SCORE:
                 w[STRETCH] *= 2.5
                 w[SHORT_PIT] *= 0.4
@@ -1577,7 +1577,7 @@ class StrategyEngine:
         managed = m is not None and m <= 0.85
         if worn > 0.6 or not (managed or st.style == STRETCH):
             return
-        temper = temperament(car.name)
+        temper = temperament(car.name, getattr(car, "number", None))
         stay = 0.2 + 0.25 * (1.0 - temper) + (0.15 if me.rank <= 10 else 0.0) + (0.1 if worn <= 0.35 else 0.0)
         how = f"managed them ({m:.0%} of the field's falloff)" if managed else "stretch run"
         if self.rng.random() < stay:

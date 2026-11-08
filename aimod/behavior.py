@@ -49,9 +49,23 @@ STRETCH_RUNS_OUT = 0.9  # a stretch plan is run by a tire manager, except the mo
 SHORT_PIT_MANAGES = 0.3  # a short-pit plan is attacked, except by the most patient ~30 %
 
 
-def temperament(name: str) -> float:
-    """0 = patient ... 1 = aggressive. Fixed per driver (from the name), so the same driver always leans the
-    same way."""
+# Temperament per car number for the loaded session: the driver's .car aggression as a percentile of the field
+# (aggression.temperaments; set by the app when the track / mod loads). Cars missing from it use the name hash.
+_TEMPERS: dict[int, float] = {}
+
+
+def set_temperaments(table: dict[int, float] | None):
+    _TEMPERS.clear()
+    _TEMPERS.update({int(k): float(v) for k, v in (table or {}).items()})
+
+
+def temperament(name: str, number: int | None = None) -> float:
+    """0 = patient ... 1 = aggressive. Fixed per driver: his .car aggression's place in this field (2026-11-05),
+    else a value from his name, so the same driver always leans the same way."""
+    if number is not None:
+        t = _TEMPERS.get(int(number))
+        if t is not None:
+            return t
     return (zlib.crc32((name or "").encode("utf-8", "replace")) % 100) / 100.0
 
 
@@ -130,6 +144,7 @@ class Ctx:
     lap_time: float = DEFAULT_LAP_TIME
     drafting: bool = False
     stage_end: int | None = None    # race lap the coming stage ends on
+    stage_ends: tuple = ()          # race laps where the stages end (all but the last; racing intensity)
 
 
 @dataclass
@@ -154,10 +169,11 @@ class Car:
     waits_for_stage: bool = False   # plans to pit at the coming stage break
     stretch: bool = False           # its stop plan only works by saving fuel (a stop fewer)
     stop_style: str = ""            # the strategy engine's stop style for this run: stretch / split / short-pit
+    damage: float = 0.0             # the game's damage sum (racing intensity: hurt cars protect the car)
 
     @property
     def temper(self) -> float:
-        return temperament(self.name)
+        return temperament(self.name, self.number)
 
 
 @dataclass
@@ -530,7 +546,7 @@ def gather(engine, res, snap, p, track_type: str | None = None) -> tuple[Ctx, li
               lap_now=engine.lap_now, total=engine.lap_total, to_go=res.laps_to_go,
               lap_time=engine.lap_time or DEFAULT_LAP_TIME,
               drafting=bool(snap.drafting or (track_type or p.track_type) == SUPERSPEEDWAY),
-              stage_end=engine.next_stage_end())
+              stage_end=engine.next_stage_end(), stage_ends=tuple(getattr(engine, "stage_list", ()) or ()))
     by_idx = {c.idx: c for c in snap.cars if c.valid}
     cars = []
     for r in res.rows:
@@ -560,5 +576,6 @@ def gather(engine, res, snap, p, track_type: str | None = None) -> tuple[Ctx, li
                         laps_down=r.laps_down, progress=progress, on_track=on_track, fuel_laps=r.fuel_laps,
                         fuel_margin=r.fuel_margin, laps_in_run=left, stint_laps=max(0, car_lap - last_stop),
                         run_id=last_stop, falloff=r.falloff, pace_delta=r.pace_delta, waits_for_stage=waits,
-                        stretch=stretch, stop_style=(st.style if st is not None else "") or ""))
+                        stretch=stretch, stop_style=(st.style if st is not None else "") or "",
+                        damage=float(getattr(sc, "damage", 0.0) or 0.0)))
     return ctx, cars

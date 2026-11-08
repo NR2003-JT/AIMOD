@@ -171,14 +171,20 @@ class TalkIndicator:
         self._push(force=True)
 
     # ------------------------------------------------------------------ drawing
+    def _image_key(self):
+        number = 24 if (self.moving and self._number is None) else self._number
+        return number, round(float(self.cfg.get("size", 1.0)), 2)
+
+    def _image(self, key):
+        return build_card(key[0], key[1], self.artdata)
+
     def _push(self, force=False):
         if self.win is None or Image is None:
             return
-        number = 24 if (self.moving and self._number is None) else self._number
-        key = (number, round(float(self.cfg.get("size", 1.0)), 2))
+        key = self._image_key()
         if key != self.key:
             self.key = key
-            self.img = build_card(number, float(self.cfg.get("size", 1.0)), self.artdata)
+            self.img = self._image(key)
             self.bgra = _premultiplied_bgra(self.img)
         a = 1.0 if self.moving else self.alpha
         if not force and abs(a - self.shown) < 0.01:
@@ -256,3 +262,118 @@ class TalkIndicator:
         if self.win is not None:
             self.win.destroy()
             self.win = None
+
+
+# ---------------------------------------------------------------------- rivals on screen
+RIVAL_KINDS = {"grudge": ("GRUDGE", (255, 196, 64)), "feud": ("FEUD", (255, 128, 32)),
+               "rival": ("RIVALS", (120, 170, 255)), "retaliate": ("RETALIATION", (255, 56, 56))}
+RIVAL_HOLD = 2.0                  # s: stays up at least this long (no flicker when the gap hovers at the edge)
+
+
+def _number_card(number, card_h: int, artdata=None):
+    """The car's number card from the art, else its number on the driver's colour (as build_card)."""
+    if artdata is not None and number is not None:
+        path = artdata.abs_path(artdata.rel_number(number))
+        if path and os.path.isfile(path):
+            try:
+                card = Image.open(path).convert("RGBA")
+                return card.resize((max(1, round(card.width * card_h / card.height)), card_h), Image.LANCZOS)
+            except Exception:
+                pass
+    txt = str(number if number is not None else "--")
+    f = _font(round(card_h * 0.78))
+    pad = max(4, card_h // 7)
+    w = max(card_h, round(f.getlength(txt)) + 2 * pad)
+    card = Image.new("RGBA", (w, card_h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(card)
+    color = (artdata.color(number) if artdata is not None and number is not None else None) or "#2a2f3a"
+    d.rounded_rectangle((0, 0, w - 1, card_h - 1), radius=card_h // 6, fill=color)
+    r, g, b = (int(color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+    ink = (0, 0, 0, 255) if 0.299 * r + 0.587 * g + 0.114 * b > 150 else (255, 255, 255, 255)
+    d.text((w / 2, card_h / 2), txt, font=f, fill=ink, anchor="mm")
+    return card
+
+
+def build_rival_card(a, b, kind: str, level: int, size: float, artdata=None) -> "Image.Image":
+    """Two number cards with VS between them and what it is (GRUDGE / FEUD L2 / RIVALS / RETALIATION) under it,
+    on a faint plate with a coloured edge."""
+    h = max(28, round(BASE_H * size))
+    pad = max(4, h // 9)
+    card_h = h - 2 * pad
+    ca, cb = _number_card(a, card_h, artdata), _number_card(b, card_h, artdata)
+    name, color = RIVAL_KINDS.get(kind, (kind.upper(), (220, 220, 220)))
+    if kind == "feud" and level:
+        name = f"FEUD L{level}"
+    f_vs, f_kind = _font(round(card_h * 0.42)), _font(max(9, round(card_h * 0.24)))
+    mid_w = max(round(f_vs.getlength("VS")), round(f_kind.getlength(name))) + 2 * pad
+    W = pad + ca.width + mid_w + cb.width + pad
+    img = Image.new("RGBA", (W, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((0, 0, W - 1, h - 1), radius=h // 5, fill=(8, 10, 14, 150),
+                        outline=color + (200,), width=max(2, h // 22))
+    img.alpha_composite(ca, (pad, pad))
+    img.alpha_composite(cb, (pad + ca.width + mid_w, pad))
+    cx = pad + ca.width + mid_w / 2
+    d.text((cx, h * 0.40), "VS", font=f_vs, fill=(255, 255, 255, 235), anchor="mm")
+    d.text((cx, h * 0.76), name, font=f_kind, fill=color + (255,), anchor="mm")
+    return img
+
+
+class RivalIndicator(TalkIndicator):
+    """Two rivals on screen: while the TV camera's car is racing his rival close by (source() gives
+    (car number, rival number, kind, level) or None), their cards fade in with what it is between them."""
+
+    def __init__(self, root, cfg: dict, source, artdata=None, on_moved=None):
+        self.root, self.cfg, self.source, self.artdata, self.on_moved = root, cfg, source, artdata, on_moved
+        self.win = None
+        self.img = None
+        self.key = None
+        self.alpha = 0.0
+        self.shown = 0.0
+        self.moving = False
+        self._drag = None
+        self._info = None
+        self._since = 0.0
+        if Image is not None:
+            self.root.after(700, self._tick)
+
+    def _image_key(self):
+        info = self._info or ((24, 48, "feud", 2) if self.moving else (None, None, "rival", 0))
+        return tuple(info) + (round(float(self.cfg.get("size", 1.0)), 2),)
+
+    def _image(self, key):
+        a, b, kind, level, size = key
+        return build_rival_card(a, b, kind, level, size, self.artdata)
+
+    def _step(self):
+        now = time.monotonic()
+        on = bool(self.cfg.get("on", True))
+        info = None
+        if on:
+            try:
+                info = self.source()
+            except Exception:
+                info = None
+        peak = max(0.05, min(1.0, float(self.cfg.get("opacity", 0.85))))
+        if info is not None:
+            if tuple(info) != (tuple(self._info) if self._info else None):
+                self._info = tuple(info)
+                self._front()
+            self._since = now
+            target = peak
+        elif self._info is not None and now - self._since < RIVAL_HOLD:
+            target = self.alpha                                           # hold a moment (no flicker)
+        else:
+            target = 0.0
+        if self.moving:
+            self._ensure()
+            self._push()
+            return
+        if target == 0.0 and self.alpha == 0.0:
+            return
+        step = (0.04 / FADE_IN) * peak if target > self.alpha else (0.04 / FADE_OUT) * peak
+        self.alpha = min(target, self.alpha + step) if target > self.alpha else max(target, self.alpha - step)
+        if self.alpha == 0.0:
+            self._info = None
+        self._ensure()
+        self._push()

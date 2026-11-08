@@ -12,9 +12,13 @@ writes the game's own pace values back (the wear / fuel saved or spent stays: th
 """
 from __future__ import annotations
 
+import json
 import logging
+import math
+import os
 import struct
 
+from . import aggression as ag
 from . import memory_map as mm
 from .behavior import NEUTRAL, Effect
 
@@ -163,4 +167,256 @@ class BehaviorWriter:
                 except Exception:
                     pass
         self.reset()
+        return n
+
+
+AGG_EPS = 1e-6
+AGG_READ_MAX = 6.0           # a working value above this (or <= 0, NaN) isn't a rating: the car is left alone
+
+
+class AggressionWriter:
+    """Racing intensity / rivals in game memory: each AI car's working aggression (car + 0x16F6, see aggression.py).
+
+    The game rolls every driver's value once at the session start and never writes it again in the race, so this is
+    "set once, put back when done":
+      capture()   takes each car's rolled value (call it once the race is under way, after the start roll);
+      apply()     puts the targets in - only changes are written, clamped to [0, HARD_MAX] (a driver rolled higher
+                  keeps his own value); cars left out go back to their own value; shadow=True writes nothing and
+                  returns what it would have written;
+      rerolls()   a car whose value is no longer what we left there was rolled again by the game: the new value is
+                  his own from now on (nothing is written back over it);
+      restore()   every car still holding our value gets his own back (close, disable, mode change, new session).
+    Never the player's car (slot 0) or the pace car (slot 1). The originals are also kept in a small JSON file
+    (pid + session), so an AIMOD that closed without restoring can put them back with recover() on the next attach
+    to the same running game."""
+
+    def __init__(self, restore_path: str | None = None):
+        self.restore_path = restore_path
+        self._checked: tuple | None = None
+        self.reset()
+
+    def reset(self):
+        self.held: set[int] = set()              # slots a showdown probe has (not captured, not written)
+        self.orig: dict[int, float] = {}         # slot -> the game's rolled value (the driver's own)
+        self.last: dict[int, float] = {}         # slot -> what is in memory as we last left / saw it
+        self.mean: dict[int, float] = {}         # slot -> the .car mean (car + 0x16EE), for the log
+        self.ours: set[int] = set()              # slots holding a value we wrote
+        self.shadow_val: dict[int, float] = {}   # SHADOW: what each car would hold
+        self.session: tuple = ()
+        self.pid = None
+
+    # ---------------------------------------------------------------- checks
+    @staticmethod
+    def slot_ok(slot: int) -> bool:
+        return slot not in (mm.PLAYER_SLOT, mm.PACE_SLOT) and 0 <= slot < mm.NUM_CARS
+
+    @staticmethod
+    def addr(slot: int) -> int:
+        return mm.CAR_BLOCK_0 + slot * mm.CAR_STRIDE + mm.OFF_AGG_WORK
+
+    def available(self, pm) -> bool:
+        """The aggression read is where this NR2003.exe build has it (checked once per attach)."""
+        if pm is None:
+            return False
+        if self._checked is not None and self._checked[0] == id(pm):
+            return self._checked[1]
+        addr, want = mm.AGG_CODE_CHECK
+        try:
+            ok = pm.read_bytes(addr, len(want)) == want
+        except Exception:
+            ok = False
+        if not ok:
+            log.warning("Racing intensity off: unknown NR2003.exe build (0x%X)", addr)
+        self._checked = (id(pm), ok)
+        return ok
+
+    def _read(self, pm, slot: int, off: int = mm.OFF_AGG_WORK) -> float | None:
+        try:
+            v = struct.unpack("<f", pm.read_bytes(mm.CAR_BLOCK_0 + slot * mm.CAR_STRIDE + off, 4))[0]
+        except Exception:
+            return None
+        return v if math.isfinite(v) and 0.0 < v <= AGG_READ_MAX else None
+
+    def _write(self, pm, slot: int, v: float):
+        pm.write_bytes(self.addr(slot), struct.pack("<f", v), 4)
+
+    @property
+    def captured(self) -> bool:
+        return bool(self.orig)
+
+    # ----------------------------------------------------------------- state
+    def capture(self, pm, slots, session: tuple = ()) -> int:
+        """Take the rolled value of every car not taken yet. Returns how many were taken."""
+        if pm is None:
+            return 0
+        n = 0
+        for s in slots:
+            if not self.slot_ok(s) or s in self.orig or s in self.held:
+                continue
+            v = self._read(pm, s)
+            if v is None:
+                continue
+            self.orig[s] = self.last[s] = v
+            m = self._read(pm, s, mm.OFF_AGG_MEAN)
+            if m is not None:
+                self.mean[s] = m
+            n += 1
+        if n:
+            self.session = tuple(session)
+            self.pid = getattr(pm, "process_id", None)
+        return n
+
+    def hold(self, pm, slots) -> int:
+        """A showdown probe is using these cars: each gets his own value back (if it is still ours) and is left alone
+        until unhold(). Returns how many values were written back."""
+        n = 0
+        for s in slots:
+            if not self.slot_ok(s):
+                continue
+            self.held.add(s)
+            if s in self.orig:
+                if pm is not None and s in self.ours:
+                    v = self._read(pm, s)
+                    if v is not None and abs(v - self.last[s]) <= AGG_EPS:
+                        try:
+                            self._write(pm, s, self.orig[s])
+                            n += 1
+                        except Exception:
+                            pass
+                self.forget(s)
+        if n or slots:
+            self._save()
+        return n
+
+    def unhold(self):
+        """the probe is gone: the held cars are taken again (with whatever value the probe left) next capture"""
+        self.held.clear()
+
+    def forget(self, slot: int):
+        """A car that left the session (its slot may get another car): nothing of it is kept."""
+        for d in (self.orig, self.last, self.mean, self.shadow_val):
+            d.pop(slot, None)
+        self.ours.discard(slot)
+
+    def rerolls(self, pm) -> list[tuple[int, float, float]]:
+        """(slot, old own value, new own value) of every car the game rolled again since we last looked."""
+        out = []
+        if pm is None:
+            return out
+        for s in list(self.orig):
+            v = self._read(pm, s)
+            if v is None or abs(v - self.last[s]) <= AGG_EPS:
+                continue
+            out.append((s, self.orig[s], v))
+            self.orig[s] = self.last[s] = v
+            self.ours.discard(s)
+            self.shadow_val.pop(s, None)
+        if out:
+            self._save()
+        return out
+
+    def apply(self, pm, targets: dict[int, float], shadow: bool = False) -> list[tuple[int, float, float]]:
+        """targets: slot -> value. Captured cars not in it go back to their own value. Returns (slot, old, new) of
+        each change written (shadow: each change that would have been written)."""
+        changes = []
+        if pm is None:
+            return changes
+        for s in sorted(self.orig):
+            own = self.orig[s]
+            want = targets.get(s, own)
+            if want is None or not math.isfinite(want):
+                want = own
+            want = _f32(ag.clamp(want, 0.0, max(ag.HARD_MAX, own)))
+            if shadow:
+                cur = self.shadow_val.get(s, own)
+                if abs(want - cur) > AGG_EPS:
+                    changes.append((s, cur, want))
+                    if abs(want - own) <= AGG_EPS:
+                        self.shadow_val.pop(s, None)
+                    else:
+                        self.shadow_val[s] = want
+                continue
+            cur = self.last[s]
+            if abs(want - cur) <= AGG_EPS:
+                continue
+            try:
+                self._write(pm, s, want)
+            except Exception as ex:                  # a car that went away mid-call
+                log.debug("aggression write failed car %d: %s", s, ex)
+                continue
+            self.last[s] = want
+            if abs(want - own) <= AGG_EPS:
+                self.ours.discard(s)
+            else:
+                self.ours.add(s)
+            changes.append((s, cur, want))
+        if changes and not shadow:
+            self._save()
+        return changes
+
+    def restore(self, pm) -> int:
+        """Every car still holding our value gets his own back. Returns how many were written. Without the game
+        (pm None) nothing can be written: the restore file stays for recover()."""
+        n = 0
+        if pm is not None:
+            for s in sorted(self.ours):
+                v = self._read(pm, s)
+                if v is None or abs(v - self.last[s]) > AGG_EPS:      # the game rolled it again: his value stands
+                    continue
+                try:
+                    self._write(pm, s, self.orig[s])
+                    n += 1
+                except Exception:
+                    pass
+            self._delete_file()
+        self.reset()
+        return n
+
+    # ------------------------------------------------------------- the file
+    def _save(self):
+        if not self.restore_path:
+            return
+        if not self.ours:
+            self._delete_file()
+            return
+        data = {"pid": self.pid, "session": list(self.session),
+                "cars": {str(s): [self.orig[s], self.last[s]] for s in sorted(self.ours)}}
+        tmp = self.restore_path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp, self.restore_path)
+        except OSError as ex:
+            log.debug("aggression restore file not written: %s", ex)
+
+    def _delete_file(self):
+        if self.restore_path:
+            try:
+                os.remove(self.restore_path)
+            except OSError:
+                pass
+
+    def recover(self, pm, session: tuple = ()) -> int:
+        """Values a previous AIMOD left in this same running game (same pid and session) go back to the drivers'
+        own. Returns how many were written; the file is removed either way."""
+        if pm is None or not self.restore_path or not os.path.isfile(self.restore_path):
+            return 0
+        n = 0
+        try:
+            with open(self.restore_path, encoding="utf-8") as f:
+                data = json.load(f)
+            same = (data.get("pid") == getattr(pm, "process_id", None)
+                    and tuple(data.get("session") or ()) == tuple(session))
+            if same:
+                for k, (own, last) in (data.get("cars") or {}).items():
+                    s = int(k)
+                    if not self.slot_ok(s):
+                        continue
+                    v = self._read(pm, s)
+                    if v is not None and abs(v - float(last)) <= AGG_EPS and 0.0 < float(own) <= AGG_READ_MAX:
+                        self._write(pm, s, _f32(float(own)))
+                        n += 1
+        except (OSError, ValueError, TypeError, AttributeError) as ex:
+            log.debug("aggression restore file unreadable: %s", ex)
+        self._delete_file()
         return n
