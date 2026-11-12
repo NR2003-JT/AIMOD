@@ -5,12 +5,18 @@ __pycache__/
 # Build outputs (build.cmd -> build\dist\AIMOD.exe); the spec in build\release is kept
 /build/dist/
 /build/work/
+/build/dist_*/
+/build/work_*/
+
+# Visual Studio local state
+.vs/
 
 # Running copy, release staging and anything a race leaves behind
 /app/
 /release/
 /beta/
 /logs/
+/results/
 *.log
 *.log.*
 settings.json

@@ -44,6 +44,11 @@ come from). Questions and bug reports are welcome in the issue tracker.
   that's talking; custom lines; optional phone playback.
 - **Pit board and logs.** In-game pit board (windowed/borderless NR2003), a web/OBS widget, a CSV pit log
   per session and `aimod.log`.
+- **Race results.** When a race ends, AIMOD saves an `.html` page and a `.json` file to its `results` folder:
+  finishing order with points, stage results and stage points, laps led, fastest lap, average running position,
+  pit stops, places gained, cautions and lead changes. It reads the game's lap crossings (nothing is written to
+  the game), so it also works when you spectate. Points follow NASCAR's 2026 Chase scale (55 for a win, stage points, a fastest-lap point) and are unofficial; the start position
+  is the running order at the first green flag. Turn it off with "Save race results" on the Pit log tab.
 - **Works alone.** RaceControl (cautions, wave arounds, stages) and a companion overlay app are optional;
   AIMOD reads their files when they are there.
 

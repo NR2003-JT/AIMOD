@@ -304,6 +304,20 @@ class Game:
             snap.lap_source = "game"
         return snap
 
+    def crossing_history(self, idx: int, laps: int) -> list[int]:
+        """Game ms at which car slot `idx` completed laps 0..laps, from NR2003's scoring table (entry n = lap n;
+        entry 0 is the start). Empty when the table can't be read. Read-only."""
+        pm = self.pm
+        try:
+            _n, laps_cap, shift, table = struct.unpack("<IIII", pm.read_bytes(mm.SCORING_HDR, 16))
+            if not (0 < laps_cap <= 4096 and 0 < shift <= 14 and table and 0 <= idx < 48):
+                return []
+            n = min(laps + 1, laps_cap)
+            raw = pm.read_bytes(table + (idx << (shift + 2)), n * 4)
+            return [v & mm.CROSS_MASK for v in struct.unpack(f"<{n}I", raw)]
+        except Exception:
+            return []
+
     def _fuel(self, buf, i) -> tuple[float | None, float | None]:
         """(fuel, capacity) in game units, or (None, None). The two blocks are read without the game's
         lock, so a value that doesn't make sense (torn read) is dropped."""
@@ -411,6 +425,30 @@ class Game:
         except Exception:
             return set()
         return out
+
+    def clear_penalties(self, slots) -> int:
+        """Wipe every penalty rule's state for these car slots: the black flag bit and the "owed" nibble. The higher
+        bits (served / history) stay. Returns how many rule entries changed."""
+        n = 0
+        if not self.write_enabled or self.pm is None:
+            return 0
+        keep = ~(mm.PENALTY_BLACK_BIT | 0xF) & 0xFFFFFFFF
+        try:
+            mgr = self.pm.read_uint(mm.PENALTY_MGR)
+            arr, cnt = self.pm.read_uint(mgr + 4), self.pm.read_int(mgr + 8)
+            for k in range(min(max(cnt, 0), 64)):
+                rule = self.pm.read_uint(arr + 4 * k)
+                if not rule:
+                    continue
+                for i in slots:
+                    addr = rule + 4 + i * 4
+                    v = self.pm.read_uint(addr)
+                    if v & ~keep & 0xFFFFFFFF:
+                        self.pm.write_bytes(addr, struct.pack("<I", v & keep), 4)
+                        n += 1
+        except Exception as e:
+            log.debug("clear penalties failed: %s", e)
+        return n
 
     def make_name(self, make_id: int) -> str:
         names = self.make_names or mm.MAKE_NAMES

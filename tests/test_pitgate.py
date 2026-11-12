@@ -360,6 +360,23 @@ class RulesPendingTests(unittest.TestCase):
         g.pm = pm
         self.assertEqual(g.rules_pending(), {5, 7})
 
+    def test_clear_penalties_wipes_flag_and_owed_nibble_only(self):
+        from aimod.game import Game
+        pm = FakePM()
+        mgr, arr, rule = 0x30000000, 0x30001000, 0x30002000
+        pm.write_bytes(mm.PENALTY_MGR, struct.pack("<I", mgr), 4)
+        pm.write_bytes(mgr + 4, struct.pack("<Ii", arr, 1), 8)
+        pm.write_bytes(arr, struct.pack("<I", rule), 4)
+        pm.write_bytes(rule + 4 + 4 * 5, struct.pack("<I", 0x30019), 4)   # flag shown, owed, history bit 17
+        pm.write_bytes(rule + 4 + 4 * 6, struct.pack("<I", 0x10003), 4)   # another car: left alone
+        g = Game()
+        g.pm = pm
+        g.write_enabled = True
+        self.assertEqual(g.clear_penalties({5}), 1)
+        self.assertEqual(struct.unpack("<I", pm.read_bytes(rule + 4 + 4 * 5, 4))[0], 0x20010)
+        self.assertEqual(struct.unpack("<I", pm.read_bytes(rule + 4 + 4 * 6, 4))[0], 0x10003)
+        self.assertEqual(g.black_flags(), {6})
+
 
 if __name__ == "__main__":
     unittest.main()
