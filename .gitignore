@@ -28,6 +28,7 @@ voices/
 *.onnx
 *.onnx.json
 art/series/
+art/reference/
 
 # Local beta switch: never published
 beta.txt

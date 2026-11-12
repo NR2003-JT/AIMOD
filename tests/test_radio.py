@@ -14,9 +14,11 @@ class FakeVoice:
         self.said = []
         self.numbers = []
         self.speakers = []
+        self.calls = []                  # (text, role, sub, then): what the subtitle box / conversations got
 
-    def say(self, text, role, prio, ttl, key, number=None, tweak=(0, 0), speaker=None):
+    def say(self, text, role, prio, ttl, key, number=None, tweak=(0, 0), speaker=None, sub=None, then=None):
         self.said.append(text)
+        self.calls.append((text, role, sub, then or []))
         self.numbers.append(number)
         self.speakers.append(speaker)
 

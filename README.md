@@ -41,7 +41,12 @@ come from). Questions and bug reports are welcome in the issue tracker.
 - **Pit crew and gearbox options** (memory only, game files are never changed): modern one-lug pit
   crews with faster fuel flow, and the game's own 5/6-speed gearbox for mods that want it.
 - **Race scanner.** Spoken team radio for one car or the whole field, with an on-screen card for the car
-  that's talking; custom lines; optional phone playback.
+  that's talking; custom lines (rival and grudge calls included); optional phone playback.
+- **Subtitle box.** Optional TV-style box (number card from your art, the driver's name or SPOTTER / CREW CHIEF, and
+  exactly what is said) for the calls that matter: rivalries and grudges, big moments on the TV car, and your own
+  conversations. Everything else keeps the plain number card. Switch each kind on or off and set how often.
+- **Radio conversations.** Write short back-and-forths between a driver and his spotter or crew chief
+  (Scanner tab > Conversations); they play in place of a moment's normal line, each speaker in his own voice.
 - **Pit board and logs.** In-game pit board (windowed/borderless NR2003), a web/OBS widget, a CSV pit log
   per session and `aimod.log`.
 - **Race results.** When a race ends, AIMOD saves an `.html` page and a `.json` file to its `results` folder:

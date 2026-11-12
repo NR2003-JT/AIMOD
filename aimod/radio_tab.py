@@ -8,6 +8,7 @@ from . import carno
 from .radio import (CATEGORIES, CREW, DRIVER, DRIVER_CHOICES, SPOTTER, TRIGGERS, VOICE_CHOICES, WINDOWS_VOICES, Radio, parse_voice, team_label,
                     voice_label)
 from .scrollframe import scrolled
+from .subtitles import parse_script, script_text
 
 YOUR_CAR = "Your car"
 
@@ -180,6 +181,60 @@ class RadioTab:
         cb.pack(side="left", padx=(12, 0))
         tip(cb, "Shows a sample card at full strength: drag it where you want it, then untick.")
         self.indicator = None                       # set by the app once the window exists
+        self.bug = None
+
+        sb = ttk.LabelFrame(tab, text="Subtitle box (TV-style: who is speaking and what they say)")
+        sb.pack(fill="x", pady=(0, 6))
+        scfg = cfg["subtitles"]
+        r1 = ttk.Frame(sb)
+        r1.pack(fill="x", pady=(2, 0))
+        self.var_sub = tk.BooleanVar(value=bool(scfg["on"]))
+        cb = ttk.Checkbutton(r1, text="Show", variable=self.var_sub, command=self._changed)
+        cb.pack(side="left", padx=6)
+        tip(cb, "A TV-style box over the game for a few special calls, not every one: the number card, the speaker "
+                "(the driver's name when a driver talks, else SPOTTER or CREW CHIEF) and exactly what is said. While "
+                "it is up it replaces the plain number card; any other call still gets the number card.")
+        self.var_sub_riv = tk.BooleanVar(value=bool(scfg["rivals"]))
+        cb = ttk.Checkbutton(r1, text="Rivals and grudges", variable=self.var_sub_riv, command=self._changed)
+        cb.pack(side="left", padx=(8, 0))
+        tip(cb, "Grudge, feud, wreck and retaliation calls from any scanned car: the crew chief's and the driver's "
+                "lines of the same event are all shown.")
+        self.var_sub_mom = tk.BooleanVar(value=bool(scfg["moments"]))
+        cb = ttk.Checkbutton(r1, text="Big moments on the TV car", variable=self.var_sub_mom, command=self._changed)
+        cb.pack(side="left", padx=(8, 0))
+        tip(cb, "Caution, white flag, checkered, a stage end, black flag, heavy damage, a win or taking the lead, when "
+                "the car talking is the one the game's camera is on (a replay shows the same camera car). With one "
+                "car selected on the radio, that car.")
+        self.var_sub_conv = tk.BooleanVar(value=bool(scfg["convos"]))
+        cb = ttk.Checkbutton(r1, text="Conversations", variable=self.var_sub_conv, command=self._changed)
+        cb.pack(side="left", padx=(8, 0))
+        tip(cb, "Every line of your own driver / crew chief / spotter conversations (Conversations...) is shown.")
+        r2 = ttk.Frame(sb)
+        r2.pack(fill="x", pady=(2, 4))
+        ttk.Label(r2, text="   At most one every").pack(side="left")
+        self.var_sub_gap = tk.IntVar(value=int(scfg["min_gap"]))
+        sp = ttk.Spinbox(r2, from_=0, to=600, width=4, textvariable=self.var_sub_gap, command=self._changed)
+        sp.pack(side="left", padx=(4, 0))
+        sp.bind("<FocusOut>", lambda e: self._changed())
+        ttk.Label(r2, text="s").pack(side="left", padx=(2, 0))
+        tip(sp, "The least time between two boxes. Lines of one situation (a rivalry, a conversation) are not "
+                "counted: once its box is up, all of it shows.")
+        ttk.Label(r2, text="   Strength").pack(side="left")
+        self.var_sub_op = tk.DoubleVar(value=float(scfg["opacity"]))
+        ttk.Scale(r2, from_=0.1, to=1.0, variable=self.var_sub_op, length=100,
+                  command=lambda v: self._changed(redraw=True)).pack(side="left", padx=(4, 0))
+        ttk.Label(r2, text="   Size").pack(side="left")
+        self.var_sub_sz = tk.DoubleVar(value=float(scfg["size"]))
+        ttk.Scale(r2, from_=0.5, to=2.0, variable=self.var_sub_sz, length=100,
+                  command=lambda v: self._changed(redraw=True)).pack(side="left", padx=(4, 0))
+        self.var_sub_move = tk.BooleanVar(value=False)
+        cb = ttk.Checkbutton(r2, text="Move", variable=self.var_sub_move, command=self._bug_move_mode)
+        cb.pack(side="left", padx=(12, 0))
+        tip(cb, "Shows a sample box at full strength: drag it where you want it, then untick.")
+        b = ttk.Button(r2, text="Conversations...", command=self._conversations)
+        b.pack(side="left", padx=(12, 0))
+        tip(b, "Write short back-and-forths between a driver and his spotter or crew chief. A conversation plays "
+               "in place of the moment's normal line, one voice after another.")
 
         pv = ttk.LabelFrame(tab, text="Natural voices (Piper)")
         pv.pack(fill="x", pady=(0, 6))
@@ -304,6 +359,117 @@ class RadioTab:
         ttk.Button(win, text="Save", command=save).grid(row=3, column=3, sticky="e", padx=10, pady=(0, 10))
         show()
 
+    def _conversations(self):
+        """write back-and-forths: a moment, then 'Driver: ...' / 'Crew: ...' / 'Spotter: ...' rows, one per line"""
+        cfg = self.radio.cfg
+        convs = [{"trigger": c.get("trigger", ""), "lines": [tuple(x) for x in c.get("lines", [])]}
+                 for c in (cfg.get("conversations") or [])]
+        win = tk.Toplevel(self.lst)
+        win.title("Radio conversations")
+        win.transient(self.lst.winfo_toplevel())
+        labels = [f"{who}: {what}" for _k, who, what, _ph in TRIGGERS]
+        keys = [k for k, _w, _t, _p in TRIGGERS]
+        state = {"i": None}
+        lb = tk.Listbox(win, width=34, height=12, bg="#111111", fg="#e6e6e6", relief="flat", highlightthickness=0,
+                        exportselection=False, activestyle="none")
+        lb.grid(row=0, column=0, rowspan=4, sticky="ns", padx=(10, 6), pady=10)
+        ttk.Label(win, text="Moment").grid(row=0, column=1, sticky="w")
+        box = ttk.Combobox(win, values=labels, state="readonly", width=58)
+        box.grid(row=0, column=2, columnspan=3, sticky="w", padx=(4, 10), pady=(10, 4))
+        ttk.Label(win, text="Rows: Driver: ... / Crew: ... / Spotter: ... (said in this order, each in its own voice). "
+                            "Placeholders: {car} {pos} and the moment's own.\nA conversation with a Driver row only "
+                            "plays for AI cars (your own driver never talks).", style="Dim.TLabel").grid(
+            row=1, column=1, columnspan=4, sticky="w", padx=4)
+        text = tk.Text(win, width=64, height=9, bg="#111111", fg="#e6e6e6", insertbackground="#e6e6e6",
+                       relief="flat", wrap="word", font=("Segoe UI", 10))
+        text.grid(row=2, column=1, columnspan=4, sticky="nsew", padx=(4, 10), pady=6)
+        bad = []
+
+        def title(c):
+            first = c["lines"][0][1] if c["lines"] else "(empty)"
+            k = keys.index(c["trigger"]) if c["trigger"] in keys else 0
+            return f"{labels[k][:30]}: {first[:28]}"
+
+        def refill(select=None):
+            lb.delete(0, "end")
+            for c in convs:
+                lb.insert("end", title(c))
+            if select is not None and convs:
+                lb.selection_set(select)
+
+        def keep():                                    # the box back into the conversation it belongs to
+            i = state["i"]
+            if i is not None and i < len(convs):
+                lines, b = parse_script(text.get("1.0", "end"))
+                bad.extend(b)
+                convs[i] = {"trigger": keys[box.current()] if box.current() >= 0 else convs[i]["trigger"],
+                            "lines": lines}
+
+        def show(_e=None):
+            sel = lb.curselection()
+            if not sel:
+                return
+            keep()
+            refill(sel[0])
+            state["i"] = sel[0]
+            c = convs[sel[0]]
+            box.current(keys.index(c["trigger"]) if c["trigger"] in keys else 0)
+            text.delete("1.0", "end")
+            text.insert("1.0", script_text(c["lines"]))
+
+        def new():
+            keep()
+            convs.append({"trigger": keys[0], "lines": []})
+            refill(len(convs) - 1)
+            state["i"] = None
+            lb.event_generate("<<ListboxSelect>>")
+
+        def delete():
+            sel = lb.curselection()
+            if sel:
+                state["i"] = None
+                del convs[sel[0]]
+                refill(min(sel[0], len(convs) - 1))
+                text.delete("1.0", "end")
+                if convs:
+                    lb.event_generate("<<ListboxSelect>>")
+
+        def hear():
+            lines, _b = parse_script(text.get("1.0", "end"))
+            self.radio.play_script([(r, t.replace("{car}", "24").replace("{pos}", "5")) for r, t in lines])
+
+        def save():
+            keep()
+            if bad:
+                from tkinter import messagebox
+                messagebox.showwarning("Radio conversations", "These rows start with something other than Driver:, "
+                                       "Crew: or Spotter: and were left out:\n\n" + "\n".join(bad[:8]), parent=win)
+                bad.clear()
+            cfg["conversations"] = [{"trigger": c["trigger"], "lines": [list(x) for x in c["lines"]]}
+                                    for c in convs if c["lines"]]
+            try:
+                cfg["subtitles"]["convo_chance"] = max(0, min(100, int(chance.get())))
+            except (tk.TclError, ValueError):
+                pass
+            self.save()
+            win.destroy()
+
+        lb.bind("<<ListboxSelect>>", show)
+        ttk.Button(win, text="New", command=new).grid(row=3, column=1, sticky="w", padx=4, pady=(0, 10))
+        ttk.Button(win, text="Delete", command=delete).grid(row=3, column=2, sticky="w", pady=(0, 10))
+        ttk.Button(win, text="Hear it", command=hear).grid(row=3, column=3, sticky="e", pady=(0, 10))
+        ttk.Button(win, text="Save", command=save).grid(row=3, column=4, sticky="e", padx=10, pady=(0, 10))
+        chance = tk.IntVar(value=int(cfg["subtitles"].get("convo_chance", 100)))
+        fr = ttk.Frame(win)
+        fr.grid(row=4, column=0, columnspan=5, sticky="w", padx=10, pady=(0, 10))
+        ttk.Label(fr, text="A moment that has a conversation plays it").pack(side="left")
+        ttk.Spinbox(fr, from_=0, to=100, width=4, textvariable=chance).pack(side="left", padx=4)
+        ttk.Label(fr, text="% of the time (else its normal line)").pack(side="left")
+        win.rowconfigure(2, weight=1)
+        refill(0 if convs else None)
+        if convs:
+            lb.event_generate("<<ListboxSelect>>")
+
     def _phone_poll(self):
         """a phone can switch "Phone only" (web server thread): show it here and save it"""
         on = bool(self.radio.cfg.get("phone_only", False))
@@ -347,6 +513,12 @@ class RadioTab:
         self._show_team_cars()
         self._changed()
 
+    def _bug_move_mode(self):
+        if self.bug is not None:
+            self.bug.set_moving(bool(self.var_sub_move.get()))
+        if not self.var_sub_move.get():
+            self.save()
+
     def _move_mode(self):
         if self.indicator is not None:
             self.indicator.set_moving(bool(self.var_imove.get()))
@@ -386,8 +558,19 @@ class RadioTab:
             icfg["size"] = round(float(self.var_isz.get()), 2)
         except (tk.TclError, ValueError):
             pass
+        scfg = cfg["subtitles"]
+        scfg["on"], scfg["rivals"] = bool(self.var_sub.get()), bool(self.var_sub_riv.get())
+        scfg["moments"], scfg["convos"] = bool(self.var_sub_mom.get()), bool(self.var_sub_conv.get())
+        try:
+            scfg["min_gap"] = max(0, int(self.var_sub_gap.get()))
+            scfg["opacity"] = round(float(self.var_sub_op.get()), 2)
+            scfg["size"] = round(float(self.var_sub_sz.get()), 2)
+        except (tk.TclError, ValueError):
+            pass
         if redraw and self.indicator is not None:
             self.indicator.refresh()
+        if redraw and self.bug is not None:
+            self.bug.refresh()
         cfg["on"] = bool(self.var_on.get())
         car = self.var_car.get().strip().lstrip("#")
         cfg["car"] = "player" if car in ("", YOUR_CAR, "player") else car

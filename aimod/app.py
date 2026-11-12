@@ -38,6 +38,7 @@ from .crewview import CrewView
 from .humancalls import Desk
 from .radio import Radio, tv_slot
 from .radio_overlay import RivalIndicator, TalkIndicator
+from .subtitle_overlay import SubtitleBug
 from .carno import CarNo
 from .radio_tab import RadioTab
 from .scrollframe import scrolled
@@ -396,6 +397,8 @@ class App:
             self.pitboard.show()
         self.talk_ind = TalkIndicator(self.root, self.radio, artdata=self.artdata, on_moved=self._save_settings)
         self.radio_tab.indicator = self.talk_ind
+        self.sub_bug = SubtitleBug(self.root, self.radio, artdata=self.artdata, on_moved=self._save_settings)
+        self.radio_tab.bug = self.sub_bug
         self.rival_ind = RivalIndicator(self.root, self.rival_ind_cfg, self._rival_onscreen_info, artdata=self.artdata,
                                         on_moved=self._save_settings)
         if self.settings["use_companion"]:
@@ -3059,6 +3062,7 @@ class App:
         self.engine.reset()
         self.radio.stop()
         self.talk_ind.close()
+        self.sub_bug.close()
         self.rival_ind.close()
         self.tire_model.save()
         self.board_server.stop()

@@ -222,7 +222,13 @@ class TalkIndicator:
         cur = self.radio.voice.current
         peak = max(0.05, min(1.0, float(self.cfg.get("opacity", 0.6))))
         target = 0.0
-        if on and cur is not None and cur.get("number") is not None:
+        if on and cur is not None and cur.get("sub"):
+            self._number = None            # the subtitle box has the number card in it: this one steps aside
+            self.alpha = 0.0
+            if not self.moving:
+                self._push()
+                return
+        if on and cur is not None and cur.get("number") is not None and not cur.get("sub"):
             if cur["number"] != self._number or cur["end"] != self._last_end:
                 self._number = cur["number"]
                 self._front()                  # other overlays are topmost too: come to the front to be seen
