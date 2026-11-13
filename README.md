@@ -40,6 +40,10 @@ come from). Questions and bug reports are welcome in the issue tracker.
   aggression value in memory; it gives closer racing, but it doesn't reliably cause deliberate contact yet.
 - **Pit crew and gearbox options** (memory only, game files are never changed): modern one-lug pit
   crews with faster fuel flow, and the game's own 5/6-speed gearbox for mods that want it.
+- **Sound sets per series.** Pick a series and a loose-WAV sound set, press Apply with NR2003 closed. AIMOD backs up
+  the game's loose sounds first, checks every WAV (PCM, 22050 Hz, 16-bit, right channel count), layers partial sets
+  over the originals and only ever touches files it wrote. Restore puts the originals back. Add your own sound
+  packs from a folder (none are bundled except NASCARMASTER's open-wheel crash sounds).
 - **Race scanner.** Spoken team radio for one car or the whole field, with an on-screen card for the car
   that's talking; custom lines (rival and grudge calls included); optional phone playback.
 - **Subtitle box.** Optional TV-style box (number card from your art, the driver's name or SPOTTER / CREW CHIEF, and
@@ -100,6 +104,7 @@ finish. Tests that read an installed NR2003 skip themselves when it isn't there.
 | `aimod/radio*.py`, `aimod/helmet.py` | Race scanner, voices and the on-screen card |
 | `aimod/adjust.py`, `aimod/aisetup.py` | Crew chief chassis adjustments from the track's AI setup |
 | `aimod/pitcrew.py`, `aimod/gearbox.py` | Pit crew and gearbox options (memory only) |
+| `aimod/soundsets.py`, `sound_sets/` | Per-mod loose WAV sets and reversible file staging |
 | `aimod/tiremodel.py`, `aimod/pace.py` | Learned tire falloff and pace per track |
 | `aimod/behavior.py`, `aimod/aggression.py` | Driver behavior, racing intensity and rivals |
 | `aimod/carfiles.py`, `aimod/carno.py` | `.car` files (teams, crew ratings) and car numbers ("01" is stored as 2001) |

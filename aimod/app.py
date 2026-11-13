@@ -25,6 +25,7 @@ from .aisetup import ai_setup
 from .gearbox import Gearbox, default_on as gearbox_default_on, offered as gearbox_offered
 from .pitcrew import PitCrew, default_modern
 from .pitgate import PitGate
+from .soundsets import ORIGINAL as ORIGINAL_SOUNDS, SoundSetManager
 from .pitlog import COLUMNS as PITLOG_COLUMNS, PitLog
 from .results import ResultsRecorder
 from .presets import Preset, PresetStore, parse_stage_ends
@@ -287,6 +288,7 @@ class App:
         self.base = base_dir()
         self.settings_path = os.path.join(self.base, "settings.json")
         self.settings = self._load_settings()
+        self.sound_sets = SoundSetManager(self.base)
         self.store = PresetStore(self.settings.get("presets_dir") or os.path.join(self.base, "presets"))
         self.pitlog = PitLog(os.path.join(self.base, "logs"))
         self.game = Game()
@@ -435,6 +437,8 @@ class App:
                 s["patches"] = list(s["patches"]) + ["caution_repairs"]
         _removed_patches = {"pit_takeover", "pit_takeover_extra", "no_game_repair_stops"}
         s["patches"] = [k for k in s["patches"] if k not in _removed_patches]
+        if not isinstance(s.get("sound_sets_by_mod"), dict):
+            s["sound_sets_by_mod"] = {}
         pb = {"enabled": False, "x": 40, "y": 160, "scale": 1.0, "width": 280, "opacity": 1.0, "max_rows": 10,
               "hold": 12, "auto_hide": True, "compact": False}
         pb.update(s.get("pitboard") or {})
@@ -957,7 +961,35 @@ class App:
         Tooltip(self.btn_gear_restore, "Put the stock gearbox back (best in the garage or between sessions, "
                                        "not while cars are using 5th gear). Also turns the option off.")
         self.lbl_patch = ttk.Label(af, style="Dim.TLabel", wraplength=280)
-        self.lbl_patch.grid(row=len(mm.PATCHES) + 3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        sound_row = len(mm.PATCHES) + 3
+        ttk.Label(af, text="Sounds for series:").grid(row=sound_row, column=0, sticky="w", pady=(6, 0))
+        sound_controls = ttk.Frame(af)
+        sound_controls.grid(row=sound_row, column=1, sticky="e", pady=(6, 0))
+        self.var_sound_series = tk.StringVar(value="")
+        self.cmb_sound_series = ttk.Combobox(sound_controls, textvariable=self.var_sound_series,
+                                             values=self._sound_series_list(), state="readonly", width=16)
+        self.cmb_sound_series.pack(side="left")
+        self.cmb_sound_series.bind("<<ComboboxSelected>>", lambda e: self._sound_series_selected())
+        self.var_sound_set = tk.StringVar(value=ORIGINAL_SOUNDS)
+        self.cmb_sound_set = ttk.Combobox(sound_controls, textvariable=self.var_sound_set,
+                                          values=self.sound_sets.names(), state="readonly", width=22)
+        self.cmb_sound_set.pack(side="left", padx=(4, 0))
+        self.cmb_sound_set.bind("<<ComboboxSelected>>", lambda e: self._sound_set_selected())
+        self.btn_sound_import = ttk.Button(sound_controls, text="Add…", width=5, command=self._sound_set_import)
+        self.btn_sound_import.pack(side="left", padx=(4, 0))
+        self.btn_sound_apply = ttk.Button(sound_controls, text="Apply", width=6, command=self._sound_set_apply)
+        self.btn_sound_apply.pack(side="left", padx=(4, 0))
+        self.btn_sound_restore = ttk.Button(sound_controls, text="Restore", width=7, command=self._sound_set_restore)
+        self.btn_sound_restore.pack(side="left", padx=(4, 0))
+        Tooltip(self.cmb_sound_set, "The sound set used for the chosen series. Partial sets fall back to the "
+                                    "original sounds for anything they don't include. Apply copies it into "
+                                    "NR2003's sound folder (originals are backed up first); NR2003 must be closed, "
+                                    "and it loads sounds when it starts.")
+        Tooltip(self.btn_sound_restore, "Put the original loose sounds back (removes only files AIMOD wrote).")
+        self.lbl_sound_set = ttk.Label(af, style="Dim.TLabel", wraplength=430,
+                                       text="Pick a series and a set, then Apply with NR2003 closed.")
+        self.lbl_sound_set.grid(row=sound_row + 1, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        self.lbl_patch.grid(row=sound_row + 2, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
     def _build_tabs(self, parent):
         nb = ttk.Notebook(parent)
@@ -1186,6 +1218,86 @@ class App:
         self.settings["patches"] = [k for k, v in self.patch_vars.items() if v.get()]
         if self.game.pm is not None:
             self.game.apply_patches(self.settings["patches"])
+
+    DEFAULT_GAME_DIR = "C:/Papyrus/NASCAR Racing 2003 Season"
+
+    def _sound_game_dir(self) -> str:
+        live = self.game.nr2003_dir() if self.game.pm is not None else ""
+        for d in (live, self.settings.get("nr2003_dir") or "", self.DEFAULT_GAME_DIR):
+            if d and os.path.isdir(os.path.join(d, "sound")):
+                return d
+        return ""
+
+    def _sound_series_list(self) -> list[str]:
+        d = self._sound_game_dir()
+        try:
+            return sorted((n for n in os.listdir(os.path.join(d, "series"))
+                           if os.path.isdir(os.path.join(d, "series", n))), key=str.casefold) if d else []
+        except OSError:
+            return []
+
+    def _sound_series_selected(self):
+        series = self.var_sound_series.get()
+        name = SoundSetManager.set_for(series, self.settings.get("sound_sets_by_mod"))
+        if name not in self.sound_sets.names():
+            name = ORIGINAL_SOUNDS
+        self.var_sound_set.set(name)
+
+    def _sound_set_selected(self):
+        series = self.var_sound_series.get()
+        if not series:
+            self.lbl_sound_set.configure(text="Pick a series first.", foreground=DIM)
+            return
+        self.settings.setdefault("sound_sets_by_mod", {})[series] = self.var_sound_set.get() or ORIGINAL_SOUNDS
+        self._save_settings()
+        self.lbl_sound_set.configure(text=f"Saved for {series}. Press Apply (NR2003 closed) to stage it.", foreground=DIM)
+
+    def _sound_set_import(self):
+        folder = filedialog.askdirectory(title="Choose a folder of your own WAV files for a new sound set",
+                                         parent=self.root)
+        if not folder:
+            return
+        try:
+            name, warnings = self.sound_sets.import_folder(folder)
+        except Exception as e:
+            messagebox.showerror("Add sound set", str(e), parent=self.root)
+            return
+        self.cmb_sound_set.configure(values=self.sound_sets.names())
+        self.var_sound_set.set(name)
+        self._sound_set_selected()
+        if warnings:
+            messagebox.showinfo("Add sound set", "Imported '%s'.\n\n%s" % (name, "\n".join(warnings)),
+                                parent=self.root)
+
+    def _sound_set_apply(self):
+        series = self.var_sound_series.get()
+        game_dir = self._sound_game_dir()
+        if not game_dir:
+            self.lbl_sound_set.configure(text="NR2003's sound folder was not found.", foreground=BAD)
+            return
+        self._sound_run(lambda: self.sound_sets.apply(game_dir, self.var_sound_set.get() or ORIGINAL_SOUNDS),
+                        series)
+
+    def _sound_set_restore(self):
+        game_dir = self._sound_game_dir()
+        if not game_dir:
+            self.lbl_sound_set.configure(text="NR2003's sound folder was not found.", foreground=BAD)
+            return
+        self._sound_run(lambda: self.sound_sets.restore(game_dir), "")
+
+    def _sound_run(self, fn, series):
+        try:
+            self.lbl_sound_set.configure(text=fn(), foreground=DIM)
+        except Exception as e:
+            self.lbl_sound_set.configure(text=f"Not applied: {e}", foreground=BAD)
+            log.warning("Sound set not applied (%s): %s", series, e)
+
+    def _sound_mod_changed(self):
+        """A session loaded: show the detected series and the set mapped to it (nothing is staged while the
+        game runs; sounds are staged by Apply before launching)."""
+        if self.mod and self.mod in self.cmb_sound_series.cget("values"):
+            self.var_sound_series.set(self.mod)
+            self._sound_series_selected()
 
     def _crew_modern(self) -> bool:
         mod = self.mod or ""
@@ -1972,6 +2084,7 @@ class App:
             self._use_tire_model()
             self._apply_art_choice()
             self._apply_make_names()
+            self._sound_mod_changed()
         if not track:
             self.lbl_track.configure(text="Track: - (waiting for a session)", foreground=DIM)
             self.btn_assign.state(["disabled"])

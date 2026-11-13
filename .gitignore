@@ -45,3 +45,6 @@ CLAUDE.md
 
 # Personal install helper (local paths)
 install_softer_adjustments.ps1
+
+# Sound set WAVs are not ours to redistribute
+/sound_sets/
