@@ -202,6 +202,8 @@ class AggressionWriter:
         self.mean: dict[int, float] = {}         # slot -> the .car mean (car + 0x16EE), for the log
         self.ours: set[int] = set()              # slots holding a value we wrote
         self.shadow_val: dict[int, float] = {}   # SHADOW: what each car would hold
+        self.side_nat: dict[int, float] = {}     # slot -> the game's own side-padding base (car + 0x1BEA)
+        self.side_w: dict[int, float] = {}       # slot -> the scaled value we left there
         self.session: tuple = ()
         self.pid = None
 
@@ -274,6 +276,7 @@ class AggressionWriter:
             if not self.slot_ok(s):
                 continue
             self.held.add(s)
+            self._side_put_back(pm, s)
             if s in self.orig:
                 if pm is not None and s in self.ours:
                     v = self._read(pm, s)
@@ -297,6 +300,8 @@ class AggressionWriter:
         for d in (self.orig, self.last, self.mean, self.shadow_val):
             d.pop(slot, None)
         self.ours.discard(slot)
+        self.side_nat.pop(slot, None)
+        self.side_w.pop(slot, None)
 
     def rerolls(self, pm) -> list[tuple[int, float, float]]:
         """(slot, old own value, new own value) of every car the game rolled again since we last looked."""
@@ -354,11 +359,68 @@ class AggressionWriter:
             self._save()
         return changes
 
+    # ------------------------------------------------------- side padding
+    SIDE_OK = (0.05, 5.0)        # the base we know is 0.7 / 1.0 / 1.5; anything else is left alone
+
+    @staticmethod
+    def _side_addr(slot: int) -> int:
+        return mm.CAR_BLOCK_0 + slot * mm.CAR_STRIDE + mm.OFF_SIDE_BASE
+
+    def _side_read(self, pm, slot: int) -> float | None:
+        try:
+            v = struct.unpack("<f", pm.read_bytes(self._side_addr(slot), 4))[0]
+        except Exception:
+            return None
+        return v if math.isfinite(v) else None
+
+    def _side_put_back(self, pm, slot: int):
+        """His own base back, but only if what is there is still what we wrote (else the game reset it)."""
+        w = self.side_w.pop(slot, None)
+        nat = self.side_nat.get(slot)
+        if pm is None or w is None or nat is None:
+            return
+        cur = self._side_read(pm, slot)
+        if cur is not None and abs(cur - w) <= AGG_EPS:
+            try:
+                pm.write_bytes(self._side_addr(slot), struct.pack("<f", nat), 4)
+            except Exception:
+                pass
+
+    def apply_side(self, pm, scales: dict[int, float], shadow: bool = False) -> int:
+        """scales: slot -> scale of his own side-padding base (< 1 = leaves less room beside other cars). Captured
+        cars not in it (or at 1.0) get their own base back. Called every tick: a value that isn't what we wrote is
+        the game's new own value (a mode change reset it). Returns how many cars are scaled now."""
+        if pm is None or shadow:
+            return 0
+        n = 0
+        for s in sorted(self.orig):
+            scale = scales.get(s, 1.0) if s not in self.held else 1.0
+            if scale >= 1.0 or not math.isfinite(scale):
+                self._side_put_back(pm, s)
+                continue
+            cur = self._side_read(pm, s)
+            if cur is None or not (self.SIDE_OK[0] < cur < self.SIDE_OK[1]):
+                continue
+            w = self.side_w.get(s)
+            if w is None or abs(cur - w) > AGG_EPS:
+                self.side_nat[s] = cur
+            val = _f32(max(0.0, scale) * self.side_nat[s])
+            if abs(cur - val) > 1e-7:
+                try:
+                    pm.write_bytes(self._side_addr(s), struct.pack("<f", val), 4)
+                except Exception:
+                    continue
+            self.side_w[s] = val
+            n += 1
+        return n
+
     def restore(self, pm) -> int:
         """Every car still holding our value gets his own back. Returns how many were written. Without the game
         (pm None) nothing can be written: the restore file stays for recover()."""
         n = 0
         if pm is not None:
+            for s in list(self.side_w):
+                self._side_put_back(pm, s)
             for s in sorted(self.ours):
                 v = self._read(pm, s)
                 if v is None or abs(v - self.last[s]) > AGG_EPS:      # the game rolled it again: his value stands

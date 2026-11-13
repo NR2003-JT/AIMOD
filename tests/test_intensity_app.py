@@ -39,6 +39,8 @@ class Fixture(unittest.TestCase):
         addr, want = mm.AGG_CODE_CHECK
         pm._put(addr, want)
         pm._put(AggressionWriter.addr(0), struct.pack("<f", 1.11))       # the player's value: must never change
+        for sl in range(mm.NUM_CARS):
+            pm._put(AggressionWriter._side_addr(sl), struct.pack("<f", 1.0))   # side-padding base
         self.pm = pm
         self.nums = {c.slot: c.number for c in pm.cars}                 # slots 2..5
         behavior.set_temperaments({n: 0.8 for n in self.nums.values()})
@@ -74,6 +76,9 @@ class Fixture(unittest.TestCase):
 
     def mem(self, slot):
         return struct.unpack("<f", self.pm._get(AggressionWriter.addr(slot), 4))[0]
+
+    def side(self, slot):
+        return struct.unpack("<f", self.pm._get(AggressionWriter._side_addr(slot), 4))[0]
 
     def tick(self, gaps, near=None, dt=1.0, new_lap=False):
         """gaps: slot -> seconds behind the leader; near: (slot, slot) put 3 m apart (for contact)."""
@@ -123,6 +128,10 @@ class OnMode(Fixture):
         for s in (A, B):
             self.assertGreater(self.mem(s), own[s] + agg.RIVAL_ADDS[2] - 0.01)
         self.assertEqual(self.mem(0), struct.unpack("<f", struct.pack("<f", 1.11))[0])   # never the player
+        for s in (A, B):                                  # the pushed cars leave less room beside each other
+            self.assertAlmostEqual(self.side(s), 0.7, places=5)
+        for s in (4, 5):
+            self.assertEqual(self.side(s), 1.0)
         # a caution right after their run-in: settled, everyone back to his own value at once
         self.dmg[B] += 0.05
         self.tick({2: 0.0, 3: 0.1, 4: 8.0, 5: 12.0}, near=(A, B))
@@ -131,6 +140,7 @@ class OnMode(Fixture):
         self.assertIsNone(self.app.rivals.relation(self.nums[A], self.nums[B]))
         for s in own:
             self.assertEqual(self.mem(s), own[s])
+            self.assertEqual(self.side(s), 1.0)
         kinds = [r["event"] for r in self.rows()]
         for k in ("contact", "grudge", "feud", "change", "settled"):
             self.assertIn(k, kinds)

@@ -37,7 +37,9 @@ come from). Questions and bug reports are welcome in the issue tracker.
 - **Driver behavior and rivals (beta, off by default).** AI drivers save fuel or tires, push late in a
   stage, and race harder when it matters (late in a stage, for the lead, against a rival). Rivals are pairs
   you set, or grudges that build from run-ins during the race. This works through each driver's
-  aggression value in memory; it gives closer racing, but it doesn't reliably cause deliberate contact yet.
+  aggression value in memory, and a driver in a battle also keeps less room beside other cars (the "Side room"
+  setting, 70% by default, 100% = off). It gives closer side-by-side racing, but it doesn't reliably cause
+  deliberate contact yet.
 - **Pit crew and gearbox options** (memory only, game files are never changed): modern one-lug pit
   crews with faster fuel flow, and the game's own 5/6-speed gearbox for mods that want it.
 - **Sound sets per series.** Pick a series and a loose-WAV sound set, press Apply with NR2003 closed. AIMOD backs up

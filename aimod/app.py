@@ -234,6 +234,12 @@ PARAM_FIELDS = {  # key: (label, type, tooltip)
                      "How far the race pushes each driver from his own aggression. 0 = his own value always, 70 = "
                      "default, 100 = the full sizes (late in a stage x1.2, a battle +0.6, for the lead +0.9, rivals "
                      "up to 3.0), 150 max. More = closer racing, more contact, more cautions."),
+    "agg_side_pad": ("Side room kept in a battle (%)", int,
+                     "While a driver is racing hard (a battle, a rival) he keeps this % of his own room beside other "
+                     "cars, so the side by side racing gets closer. 70 = default (live test: close side by side, no "
+                     "wrecks), 100 = off (his own room), lower = tighter and more contact. Only the cars being "
+                     "pushed change, and each goes back to his own room when the battle ends. Needs Racing "
+                     "intensity on."),
     "behavior_late_pct": ("Final push — last (%) of the race", int,
                           "In this final share of the race every car that has the fuel pushes (not the ones that "
                           "must save to finish). 10 = the last 10 %. 0 = off."),
@@ -846,6 +852,7 @@ class App:
                      "own value back when AIMOD closes, the mode changes or a new session starts. Your car and the "
                      "pace car are never touched. Can stack with AI Enhanced's High Intensity.")
         self._entry_row(af, 1, "agg_strength")
+        self._entry_row(af, 9, "agg_side_pad")
         check(af, "rivals_on", "Rivals: grudges, feuds and retaliation",
               "Contact in the race makes rivals. One run-in: the driver who got hit may hold a grudge (his "
               "temperament decides; a calm one lets it go). Every separate run-in of the same two cars raises their "
@@ -1849,6 +1856,14 @@ class App:
             self._agg_summary(f"stage {self._agg_stage}")
         self._agg_stage = stage
         w.apply(pm, out.targets, shadow=(mode == agg.SHADOW))
+        scales = {}
+        if mode == agg.ON and p.agg_side_pad < 100:      # cars being pushed leave less room beside other cars
+            k = p.agg_side_pad / 100.0
+            for idx, st in self.intensity.state.items():
+                own = w.orig.get(idx)
+                if st.target is not None and own is not None and st.target > own + 0.05:
+                    scales[idx] = k
+        w.apply_side(pm, scales, shadow=(mode == agg.SHADOW))
         if p.rivals_on:
             self._update_rival_onscreen(pm, snap.cars)
 

@@ -99,6 +99,10 @@ DRIVER_MULT_CHECK = (0x4F6FDD, bytes([0xD9, 0x99, 0x34, 0x01, 0x00, 0x00]))   # 
 # Driver aggression (.car rating k = 0 of the triplets at driver +0x30: mean, deviation, working value). The working
 # value is read only by the car-next-to-car code (0x530110 / classifier 0x53244A); the game rolls it once at the session
 # start (mean + a draw from the deviation) and never writes it in the race (live 2026-11-03/05, 42/42 cars, writes held).
+# Side padding: the car-versus-car code (0x52BCFC) rebuilds car+0x1BEE on every AI update as car+0x1BEA + a term for the
+# cars around; car+0x1BEA is a per-car base (1.0 normally; 0.7 / 1.0 / 1.5 by the game's mode, which resets it). Scaling
+# it per car changes only that car's side room (live 2026-11-13: x0.7 on a pair = close side by side, no wrecks).
+OFF_SIDE_BASE = 0x1BEA
 OFF_AGG_MEAN = OFF_DRIVER + 0x30           # car + 0x16EE
 OFF_AGG_WORK = OFF_DRIVER + 0x38           # car + 0x16F6
 AGG_CODE_CHECK = (0x5302A2, bytes([0xD9, 0x86, 0xF6, 0x16, 0x00, 0x00]))   # fld [esi+0x16F6] in 0x530110
