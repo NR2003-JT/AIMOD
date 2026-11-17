@@ -222,8 +222,8 @@ class TalkIndicator:
         cur = self.radio.voice.current
         peak = max(0.05, min(1.0, float(self.cfg.get("opacity", 0.6))))
         target = 0.0
-        if on and cur is not None and cur.get("sub"):
-            self._number = None            # the subtitle box has the number card in it: this one steps aside
+        if on and cur is not None and cur.get("sub"):          # the subtitle box has the number card in it
+            self._number = None
             self.alpha = 0.0
             if not self.moving:
                 self._push()

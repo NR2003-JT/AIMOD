@@ -91,7 +91,7 @@ DEFAULTS = {"on": False, "car": "player", "volume": 80, "rate": 1, "voice_crew":
             "driver_voice": "Piper 21",                                # the driver (one car / the TV car)
             "driver_pool": "21, 92",                                   # the other drivers on the scanner
             "driver_swears": False,   # the driver's lines with cursing
-            "conversations": [],      # the user's scripted back-and-forths: [{"trigger", "lines": [[role, text]]}]
+            "conversations": [],      # the user's scripted back and forths: {"name", "trigger", "lines": [(role, text)]}
             "custom_lines": {},       # the user's own driver lines: kind -> [lines] (said as written, never filtered)
             "custom_only": False,     # only the user's lines for a kind that has some
             "piper_pool": "332, 523, 217, 31, 496, 410",             # scanner: crew chiefs of the other cars
@@ -182,8 +182,8 @@ class _Msg:
     def __init__(self, text, role, prio, ttl, key, number=None, tweak=(0, 0), speaker=None, sub=None, then=None):
         self.text, self.role, self.prio, self.born, self.ttl, self.key = text, role, prio, time.monotonic(), ttl, key
         self.number, self.tweak, self.speaker = number, tweak, speaker
-        self.sub = sub                       # why this might get the subtitle box: {"why", "group", "tv", "name"}
-        self.then = then or []               # the rest of a conversation: the next lines, said one after another
+        self.sub = sub                       # {"why", "group", "tv", "name"}: may get the subtitle box (subtitles.py)
+        self.then = then or []               # the rest of a conversation: each goes on air right after the one before
 
 
 class Voice(threading.Thread):
@@ -204,7 +204,7 @@ class Voice(threading.Thread):
         self.ok: bool | None = None          # None until the speech engine has been tried
         self.voices: list[str] = []
         self._file = 0
-        self.current: dict | None = None     # on air: {"number", "role", "start", "end", "text", "sub"} (overlays)
+        self.current: dict | None = None     # the transmission on air: {"number", "role", "start", "end"} (indicator)
         self.gate = SubtitleGate(cfg.setdefault("subtitles", {}))
         self.speeds: dict[int, float] = {}   # car number -> speed (m/s): the driver's engine under his voice
         self.nr2003_dir = ""                 # for the game's in-car engine samples (helmet.py)
@@ -681,9 +681,7 @@ RIVAL_LINES = {
                  "Okay, that one's settled. Focus on your own race now."),
                 ()),
 }
-
-
-DRIVER_RIVAL_KEYS = ("grudge", "feud", "retaliate")      # the moments the driver has lines (and custom lines) for
+DRIVER_RIVAL_KEYS = ("grudge", "feud", "retaliate")      # the rival events whose driver line can be a conversation / custom
 
 
 class _Blank(dict):
@@ -819,7 +817,7 @@ class Radio:
             ttl = min(ttl, 8.0)
             key = f"{number}:{key}" if key else None
             tweak = voice_tweak(number)
-        if sub is not None:                       # the car on TV (in one-car mode: the car you listen to)
+        if sub is not None:
             sub = dict(sub, tv=car is not None and car.slot == self.focus_slot and (self.tv_locked or not self.scanner),
                        name=getattr(car, "name", "") or "")
         self._log(role, text, car)
@@ -1008,7 +1006,7 @@ class CarRadio:
         vals.setdefault("pos", self.my_pos)
         conv = pick_conversation(self.cfg, convo or trig, self.ai) if (convo or trig) else None
         if conv and self.mgr.converse(self, conv, cat, prio, ttl, vals):
-            return True              # a conversation took the moment
+            return True
         if trig:
             text = custom_text(self.cfg, trig, text, vals)
         if not text:
@@ -1282,14 +1280,20 @@ class CarRadio:
             crew, driver = RIVAL_LINES[key]
             other = e.other if mine else e.holder
             vals = {"other": carno.label(carno.CarNo(int(other))), "level": e.level}
-            group = self.mgr.next_group()                 # the crew's and the driver's lines are one situation
+            group = self.mgr.next_group()
             scripted = self.say("behavior", CREW, pick(*crew).format(**vals), HIGH, 15, "rival",
                                 trig="rival_" + key, why="rival", group=group, **vals)
-            if mine and not scripted and (driver or key in DRIVER_RIVAL_KEYS):   # (a conversation has its own driver)
-                text = pick(*driver).format(**vals) if driver else ""
-                if text or (self.cfg.get("custom_lines") or {}).get("driver_rival_" + key):
-                    self.say("behavior", DRIVER, text, NORMAL, 12, "rival_drv", trig="driver_rival_" + key,
-                             why="rival", group=group, **vals)
+            if not mine:
+                continue
+            if scripted:
+                continue
+            if not (driver or key in DRIVER_RIVAL_KEYS):
+                continue
+            text = pick(*driver).format(**vals) if driver else ""
+            if not text and not (self.cfg.get("custom_lines") or {}).get("driver_rival_" + key):
+                continue
+            self.say("behavior", DRIVER, text, NORMAL, 12, "rival_drv", trig="driver_rival_" + key, why="rival",
+                     group=group, **vals)
 
     def driver_line(self, kind: str) -> str:
         built_in = pick(*DRIVER_LINES[kind][1 if self.cfg.get("driver_swears") else 0])
@@ -1678,14 +1682,14 @@ class CarRadio:
         if stage_end and ("end", lap) not in self.stage_said:
             self.stage_said.add(("end", lap))
             self.say("countdown", CREW, f"That's the end of stage {engine.stage_no(lap)}. We were P {pos}.",
-                     NORMAL, 15, trig="stage_end", why="moment",
-                     stage=engine.stage_no(lap))
+                     NORMAL, 15, trig="stage_end", why="moment", stage=engine.stage_no(lap))
         if total and lap >= total and not self.checker_said and engine.race_started:
             self.checker_said = True
             if pos == 1:
                 self.chatter("win", URGENT)
             self.say("countdown", CREW, pick(f"Checkered flag! P {pos}. Good run.",
-                                             f"That's it, P {pos}. Nice job out there."), HIGH, 20, trig="checkered", why="moment", pos=pos)
+                                             f"That's it, P {pos}. Nice job out there."), HIGH, 20, trig="checkered",
+                                            why="moment", pos=pos)
             return
         if not green:
             self.my_pos = pos

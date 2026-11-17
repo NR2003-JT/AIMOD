@@ -181,7 +181,7 @@ class RadioTab:
         cb.pack(side="left", padx=(12, 0))
         tip(cb, "Shows a sample card at full strength: drag it where you want it, then untick.")
         self.indicator = None                       # set by the app once the window exists
-        self.bug = None
+        self.bug = None                             # the subtitle box (set by the app too)
 
         sb = ttk.LabelFrame(tab, text="Subtitle box (TV-style: who is speaking and what they say)")
         sb.pack(fill="x", pady=(0, 6))
@@ -233,8 +233,8 @@ class RadioTab:
         tip(cb, "Shows a sample box at full strength: drag it where you want it, then untick.")
         b = ttk.Button(r2, text="Conversations...", command=self._conversations)
         b.pack(side="left", padx=(12, 0))
-        tip(b, "Write short back-and-forths between a driver and his spotter or crew chief. A conversation plays "
-               "in place of the moment's normal line, one voice after another.")
+        tip(b, "Write short back-and-forths between a driver and his spotter or crew chief. A conversation plays in "
+               "place of the moment's normal line, one voice after another.")
 
         pv = ttk.LabelFrame(tab, text="Natural voices (Piper)")
         pv.pack(fill="x", pady=(0, 6))
@@ -363,7 +363,7 @@ class RadioTab:
         """write back-and-forths: a moment, then 'Driver: ...' / 'Crew: ...' / 'Spotter: ...' rows, one per line"""
         cfg = self.radio.cfg
         convs = [{"trigger": c.get("trigger", ""), "lines": [tuple(x) for x in c.get("lines", [])]}
-                 for c in (cfg.get("conversations") or [])]
+                 for c in cfg.get("conversations") or []]
         win = tk.Toplevel(self.lst)
         win.title("Radio conversations")
         win.transient(self.lst.winfo_toplevel())
@@ -397,7 +397,7 @@ class RadioTab:
             if select is not None and convs:
                 lb.selection_set(select)
 
-        def keep():                                    # the box back into the conversation it belongs to
+        def keep():                                    # the text back into the conversation it belongs to
             i = state["i"]
             if i is not None and i < len(convs):
                 lines, b = parse_script(text.get("1.0", "end"))
@@ -442,8 +442,9 @@ class RadioTab:
             keep()
             if bad:
                 from tkinter import messagebox
-                messagebox.showwarning("Radio conversations", "These rows start with something other than Driver:, "
-                                       "Crew: or Spotter: and were left out:\n\n" + "\n".join(bad[:8]), parent=win)
+                messagebox.showwarning("Radio conversations",
+                                       "These rows start with something other than Driver:, Crew: or Spotter: and "
+                                       "were left out:\n\n" + "\n".join(bad[:8]), parent=win)
                 bad.clear()
             cfg["conversations"] = [{"trigger": c["trigger"], "lines": [list(x) for x in c["lines"]]}
                                     for c in convs if c["lines"]]
@@ -559,9 +560,9 @@ class RadioTab:
         except (tk.TclError, ValueError):
             pass
         scfg = cfg["subtitles"]
-        scfg["on"], scfg["rivals"] = bool(self.var_sub.get()), bool(self.var_sub_riv.get())
-        scfg["moments"], scfg["convos"] = bool(self.var_sub_mom.get()), bool(self.var_sub_conv.get())
         try:
+            scfg["on"], scfg["rivals"] = bool(self.var_sub.get()), bool(self.var_sub_riv.get())
+            scfg["moments"], scfg["convos"] = bool(self.var_sub_mom.get()), bool(self.var_sub_conv.get())
             scfg["min_gap"] = max(0, int(self.var_sub_gap.get()))
             scfg["opacity"] = round(float(self.var_sub_op.get()), 2)
             scfg["size"] = round(float(self.var_sub_sz.get()), 2)

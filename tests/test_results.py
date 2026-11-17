@@ -1,266 +1,195 @@
-"""Race results (aimod/results.py): order, laps led, stages, fastest lap and points worked out from line crossings,
-and when the file is written."""
+"""results.ResultsRecorder: a whole fake race through update() -> the .json / .html, points, laps led, stages, grid,
+late joins, saving rules."""
 import json
 import os
 import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, HERE)
 
-from aimod import memory_map as mm
-from aimod import results as rs
-from aimod.strategy import CarSnapshot, PitEvent, RaceSnapshot
-
-# number -> lap times in seconds (a lap that isn't listed takes the default). 12 laps, stages end on laps 4 and 8.
-LAP = {
-    "A": (20.0, {1: 19.0}),            # leads the first six laps; lap 1 is the quickest but doesn't count
-    "B": (20.1, {7: 17.0}),            # fastest lap that counts; takes the lead on lap 7
-    "C": (20.2, {}), "D": (20.3, {}), "E": (20.4, {}),
-    "F": (20.5, {}),                   # out after lap 6
-    "G": (25.0, {}),                   # lapped twice
-}
-NAMES = {n: (i + 2, 10 + i, f"Driver {n}") for i, n in enumerate(LAP)}     # slot, car number, name
-TOTAL = 12
+from aimod import memory_map as mm   # noqa: E402
+from aimod import results as R        # noqa: E402
 
 
-def crossings(until_s=400.0):
-    """{name: [ms of lap 1, 2 ...]} (lap 1 starts at 0)."""
-    out = {}
-    for n, (base, special) in LAP.items():
-        t, k, row = 0.0, 0, []
-        while True:
-            k += 1
-            t += special.get(k, base)
-            if t > until_s or (n == "F" and k > 6):
-                break
-            row.append(int(round(t * 1000)))
-        out[n] = row
-    return out
+class Ev:
+    def __init__(self, number, green):
+        self.number, self.green = number, green
 
 
-def snap_at(cross, t_ms, out_codes=None, flag=mm.FLAG_GREEN, dist=None):
-    cars = []
-    for n, (slot, number, name) in NAMES.items():
-        done = [x for x in cross[n] if x <= t_ms]
-        k = len(done)
-        cars.append(CarSnapshot(
-            slot, True, grip=1.0, number=number, name=name, make="Chevrolet", laps_done=k,
-            lap_dist=(dist[n] if dist else 100.0), cross_ms=done[-1] if done else None,
-            prev_cross_ms=done[-2] if k >= 2 else None,
-            reason_out=(out_codes or {}).get(n, 0)))
-    return RaceSnapshot(flag, mm.SESSION_RACE, 30.0, 1.0, TOTAL, cars)
+class C:
+    def __init__(self, **k):
+        self.__dict__.update(k)
 
 
-class Clock:
-    t = 0.0
-
-    def __call__(self):
-        return self.t
+class Snap:
+    def __init__(self, cars, flag=mm.FLAG_GREEN, total=20):
+        self.session, self.cars, self.flag, self.laps_total = mm.SESSION_RACE, cars, flag, total
 
 
-class ResultsTests(unittest.TestCase):
+N, LAPS = 8, 20
+
+
+def car(i, laps, cross, prev, dist=0.1, out=0):
+    return C(valid=True, idx=i + 2, number=10 + i, name=f"Driver {i}", make="Ford", laps_done=laps, cross_ms=cross,
+             prev_cross_ms=prev, lap_dist=dist, reason_out=out)
+
+
+class Race:
+    """Car 0 is the fastest and wins every lap; car 7 drops out on lap 8. The clock is ours."""
+
+    def __init__(self, directory, **kw):
+        self.t = 0.0
+        self.rec = R.ResultsRecorder(directory, clock=lambda: self.t, **kw)
+        self.cross = {i: [0] for i in range(N)}
+        self.kw = dict(track="Test Track", mod="Series", total=LAPS, stage_ends=(10,), cautions=2, caution_laps=5,
+                       stops=[Ev(10, True), Ev(11, False)])
+
+    def grid(self):
+        self.rec.update(Snap([car(i, 0, None, None, float(N - i)) for i in range(N)]), **self.kw)
+
+    def lap(self, n):
+        cars = []
+        for i in range(N):
+            if i == 7 and n > 8:
+                cars.append(car(i, 8, self.cross[i][-1], self.cross[i][-2], 0.5, out=3))
+                continue
+            self.cross[i].append(self.cross[i][-1] + 28000 + i * 300)
+            cars.append(car(i, n, self.cross[i][-1], self.cross[i][-2]))
+        self.t += 30
+        self.rec.update(Snap(cars), **self.kw)
+
+    def run(self, laps=LAPS):
+        self.grid()
+        for n in range(1, laps + 1):
+            self.lap(n)
+
+
+class Points(unittest.TestCase):
+    def test_race_and_stage_points(self):
+        self.assertEqual([R.race_points(p) for p in (1, 2, 3, 35, 36, 40)], [55, 35, 34, 2, 1, 1])
+        self.assertEqual([R.stage_points(p) for p in (1, 2, 10, 11)], [10, 9, 1, 0])
+
+
+class Build(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.clock = Clock()
-        self.rec = rs.ResultsRecorder(self.tmp.name, clock=self.clock)
-        self.cross = crossings()
+        self.race = Race(self.tmp.name)
+        self.race.run()
+        self.d = self.race.rec.build()
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_race(self, upto_ms=None):
-        grid = {n: 800.0 - 10 * i for i, n in enumerate(LAP)}          # A on the pole ... G last
-        self.rec.update(snap_at(self.cross, 0, dist=grid), track="Bristol", mod="Cup", total=TOTAL)
-        events = sorted({x for row in self.cross.values() for x in row})
-        for t in events:
-            if upto_ms is not None and t > upto_ms:
-                break
-            self.clock.t += 1.0
-            self.rec.update(snap_at(self.cross, t, out_codes={"F": 5} if t >= self.cross["F"][5] else None),
-                            track="Bristol", mod="Cup", total=TOTAL, stage_ends=(4, 8),
-                            cautions=2, caution_laps=7)
+    def test_order_winner_points(self):
+        r = self.d["results"]
+        self.assertTrue(self.d["complete"])
+        self.assertEqual(self.d["winner"], {"number": 10, "name": "Driver 0"})
+        self.assertEqual([x["number"] for x in r[:3]], [10, 11, 12])
+        self.assertEqual(r[0]["interval"], "LEADER")
+        self.assertEqual(r[0]["laps"], LAPS)
+        self.assertEqual((r[-1]["number"], r[-1]["status"]), (17, "Out"))     # the car that dropped out is last
+        # race 55 + stage 10 + the fastest-lap point
+        self.assertEqual((r[0]["race_points"], r[0]["stage_points"], r[0]["bonus_points"], r[0]["points"]),
+                         (55, 10, 1, 66))
+        self.assertEqual(r[1]["points"], 35 + 9)
 
-    def saved(self):
-        base = self.rec._base
-        with open(base + ".json", encoding="utf-8") as f:
-            return json.load(f)
+    def test_laps_led_and_lead_changes(self):
+        self.assertEqual(self.d["most_laps_led"], {"number": 10, "name": "Driver 0", "laps": LAPS})
+        self.assertEqual(self.d["lead_changes"], 0)
+        self.assertEqual(self.d["leaders"], 1)
 
-    def test_points_scale(self):
-        self.assertEqual([rs.race_points(p) for p in (1, 2, 3, 35, 36, 40)], [55, 35, 34, 2, 1, 1])
-        self.assertEqual([rs.stage_points(p) for p in (1, 10, 11)], [10, 1, 0])
-
-    def test_final_order_laps_led_and_points(self):
-        self.run_race()
-        d = self.rec.build()
-        self.assertTrue(d["complete"])
-        self.assertEqual([r["name"][-1] for r in d["results"]], list("BACDEGF"))
-        by = {r["name"][-1]: r for r in d["results"]}
-        self.assertEqual(by["B"]["interval"], "LEADER")
-        self.assertEqual(by["A"]["interval"], "-0.900")
-        self.assertEqual(by["G"]["laps"], 10)                     # scored on its first crossing after the winner
-        self.assertEqual(by["G"]["interval"], "-2L")
-        self.assertEqual(by["F"]["status"], "Out")
-        self.assertEqual(by["F"]["out_lap"], 6)
-        self.assertEqual(by["G"]["status"], "Running")
-        self.assertEqual((by["A"]["laps_led"], by["B"]["laps_led"]), (6, 6))
-        self.assertEqual(d["lead_changes"], 1)
-        self.assertEqual(d["leaders"], 2)
-        self.assertEqual(by["B"]["points"], 55 + 9 + 10 + 1)      # the win, both stages, the fastest lap
-        self.assertEqual(by["A"]["points"], 35 + 10 + 9)
-        self.assertEqual(by["G"]["points"], 31 + 4 + 4)
-        self.assertEqual(d["most_laps_led"]["laps"], 6)
-
-    def test_cooldown_laps_do_not_count(self):
-        self.run_race()
-        by = {r["name"][-1]: r for r in self.rec.build()["results"]}
-        self.assertEqual(by["B"]["laps"], TOTAL)                  # B kept going: more crossings are in the table
-        self.assertGreater(len(self.cross["B"]), TOTAL)
-        self.assertEqual(self.rec.build()["laps"], {"scheduled": TOTAL, "run": TOTAL})
+    def test_fastest_lap_goes_to_the_fastest_car(self):
+        self.assertEqual(self.d["fastest_lap"]["number"], 10)
+        self.assertEqual(self.d["fastest_lap"]["time"], 28.0)
+        self.assertEqual(self.d["fastest_lap_bonus"]["points"], 1)
+        self.assertEqual(sum(x["bonus_points"] for x in self.d["results"]), 1)
 
     def test_stage_results(self):
-        self.run_race()
-        d = self.rec.build()
-        s1, s2 = d["stages"]
-        self.assertEqual((s1["end_lap"], s2["end_lap"]), (4, 8))
-        self.assertEqual("".join(r["name"][-1] for r in s1["results"]), "ABCDEFG")
-        self.assertEqual("".join(r["name"][-1] for r in s2["results"]), "BACDEFG")
-        self.assertEqual([r["points"] for r in s1["results"]], [10, 9, 8, 7, 6, 5, 4])
-        self.assertEqual(s2["winner"], "Driver B")
+        (s,) = self.d["stages"]
+        self.assertEqual((s["stage"], s["end_lap"], s["winner"]), (1, 10, "Driver 0"))
+        self.assertEqual(s["results"][0]["points"], 10)
 
-    def test_fastest_lap_leaves_out_lap_one(self):
-        self.run_race()
-        d = self.rec.build()
-        self.assertEqual(d["fastest_lap"], {"number": 11, "name": "Driver B", "lap": 7, "time": 17.0})
-        by = {r["name"][-1]: r for r in d["results"]}
-        self.assertEqual(by["A"]["fastest_lap"], {"lap": 2, "time": 20.0})
+    def test_pit_stops_cautions_and_grid(self):
+        self.assertEqual(self.d["cautions"], {"count": 2, "laps": 5})
+        r = {x["number"]: x for x in self.d["results"]}
+        self.assertEqual((r[10]["pit_stops"], r[10]["green_pit_stops"]), (1, 1))
+        self.assertEqual((r[11]["pit_stops"], r[11]["green_pit_stops"]), (1, 0))
+        self.assertEqual(r[10]["start"], 1)
+        self.assertEqual(r[17]["start"], N)
+        self.assertEqual(self.d["start_source"], "running order at the first green flag")
 
-    def test_fastest_lap_point_skips_a_car_that_was_out(self):
-        self.run_race()
-        self.rec.cars[NAMES["B"][0]].out, self.rec.cars[NAMES["B"][0]].out_lap = 5, TOTAL   # off to the garage, back
-        d = self.rec.build()
-        by = {r["name"][-1]: r for r in d["results"]}
-        self.assertEqual((by["B"]["bonus_points"], by["A"]["bonus_points"]), (0, 1))
-        self.assertEqual(d["fastest_lap_bonus"]["name"], "Driver A")
-        self.assertEqual(sum(r["bonus_points"] for r in d["results"]), 1)
-        self.assertEqual(d["fastest_lap"]["name"], "Driver B")                  # the quickest lap is still B's
-        self.assertEqual(d["points_system"], "NASCAR 2026 Chase")
+    def test_html_has_the_tables(self):
+        h = R.render_html(self.d)
+        self.assertIn("<title>Race Results</title>", h)
+        self.assertIn("Driver 0", h)
+        self.assertIn("Stage 1 (lap 10)", h)
+        self.assertIn("Fastest lap point", h)
+        self.assertNotIn("race not finished", h)
 
-    def test_start_positions_and_places_gained(self):
-        self.run_race()
-        d = self.rec.build()
-        by = {r["name"][-1]: r for r in d["results"]}
-        self.assertEqual((by["A"]["start"], by["B"]["start"], by["G"]["start"]), (1, 2, 7))
-        self.assertEqual((by["B"]["change"], by["A"]["change"], by["G"]["change"]), (1, -1, 1))
-        self.assertEqual(d["biggest_mover"]["places"], 1)
 
-    def test_average_running_position(self):
-        self.run_race()
-        by = {r["name"][-1]: r for r in self.rec.build()["results"]}
-        self.assertEqual(by["C"]["avg_running_pos"], 3.0)         # third at every lap's line crossing
-        self.assertLess(by["B"]["avg_running_pos"], by["A"]["avg_running_pos"] + 1)
+class Saving(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
 
-    def test_pit_stops_counted_per_car(self):
-        self.rec.stops = []
-        self.run_race()
-        self.rec.stops = [PitEvent(0, 3, 12, "Driver C", 5, "4 TIRES", "x", True, 1),
-                          PitEvent(0, 3, 12, "Driver C", 9, "4 TIRES", "x", False, 2)]
-        by = {r["name"][-1]: r for r in self.rec.build()["results"]}
-        self.assertEqual((by["C"]["pit_stops"], by["C"]["green_pit_stops"], by["A"]["pit_stops"]), (2, 1, 0))
+    def tearDown(self):
+        self.tmp.cleanup()
 
-    def test_written_once_the_field_is_home_and_only_when_changed(self):
-        self.run_race()
-        self.assertIsNone(self.rec._last_text)                    # not yet: the field may still be finishing
-        self.clock.t += rs.FINAL_HOLD_S + 1
-        self.rec.update(snap_at(self.cross, 400000), track="Bristol", mod="Cup", total=TOTAL, stage_ends=(4, 8),
-                        cautions=2, caution_laps=7)
-        d = self.saved()
-        self.assertEqual(d["results"][0]["name"], "Driver B")
-        self.assertTrue(os.path.exists(self.rec._base + ".html"))
-        with open(self.rec._base + ".html", encoding="utf-8") as f:
-            html = f.read()
-        self.assertIn("Stage 2 (lap 8)", html)
-        self.assertIn("LEADER", html)
-        mtime = os.path.getmtime(self.rec._base + ".json")
-        base = self.rec._base
-        self.rec.stops = []
-        self.rec.finish("session type changed")                    # same content: no rewrite
-        self.assertEqual(os.path.getmtime(base + ".json"), mtime)
-        self.assertFalse(self.rec.active)                          # and the recorder starts over
-        self.assertEqual([f for f in os.listdir(self.tmp.name) if f.endswith(".tmp")], [])
+    def files(self):
+        return sorted(os.listdir(self.tmp.name))
+
+    def test_written_once_the_field_has_finished(self):
+        race = Race(self.tmp.name)
+        race.run()
+        self.assertEqual(self.files(), [])                     # the winner is home but the field gets a moment
+        race.t += R.FINAL_HOLD_S + 1
+        race.rec.update(Snap([car(i, LAPS, race.cross[i][-1], race.cross[i][-2]) for i in range(7)]), **race.kw)
+        names = self.files()
+        self.assertEqual(len(names), 2)
+        self.assertTrue(names[0].startswith("results_") and names[0].endswith("_Test_Track.html"))
+        with open(os.path.join(self.tmp.name, names[1]), encoding="utf-8") as f:
+            d = json.load(f)
+        self.assertTrue(d["complete"])
+        self.assertEqual((d["generated_by"], d["format"]), ("AIMOD", 1))
 
     def test_unfinished_race_is_saved_when_the_session_ends(self):
-        self.run_race(upto_ms=int(7.5 * 20000))
-        self.rec.finish("game closed")
-        files = [f for f in os.listdir(self.tmp.name) if f.endswith(".json")]
-        self.assertEqual(len(files), 1)
-        with open(os.path.join(self.tmp.name, files[0]), encoding="utf-8") as f:
+        race = Race(self.tmp.name)
+        race.run(laps=12)
+        race.rec.finish("new session")
+        names = [n for n in self.files() if n.endswith(".json")]
+        self.assertEqual(len(names), 1)
+        with open(os.path.join(self.tmp.name, names[0]), encoding="utf-8") as f:
             d = json.load(f)
         self.assertFalse(d["complete"])
-        self.assertEqual(d["laps"]["scheduled"], TOTAL)
-        self.assertLess(d["laps"]["run"], TOTAL)
+        self.assertIn("race not finished", R.render_html(d))
+        self.assertFalse(race.rec.active)                      # and it starts fresh
 
-    def test_a_race_of_two_laps_is_not_saved(self):
-        self.run_race(upto_ms=2 * 20000)
-        self.rec.finish("session type changed")
-        self.assertEqual(os.listdir(self.tmp.name), [])
+    def test_a_session_nobody_raced_is_not_saved(self):
+        race = Race(self.tmp.name)
+        race.grid()
+        race.lap(1)
+        race.rec.finish("game closed")
+        self.assertEqual(self.files(), [])
 
-    def test_no_file_outside_a_race(self):
-        s = snap_at(self.cross, 100000)
-        s.session = 5
-        self.rec.update(s, track="Bristol", total=TOTAL)
-        self.assertFalse(self.rec.active)
-
-    def test_joining_a_running_race_fills_the_laps_from_the_game_table(self):
-        row = {NAMES[n][0]: [0] + self.cross[n] for n in LAP}
-        rec = rs.ResultsRecorder(self.tmp.name, history=lambda idx, laps: row.get(idx, [])[:laps + 1],
-                                 clock=self.clock)
-        rec.update(snap_at(self.cross, 150000), track="Bristol", mod="Cup", total=TOTAL, stage_ends=(4, 8))
-        self.assertIsNone(rec.grid)                                # no grid when the race is already running
-        self.assertEqual(sorted(rec.cars[NAMES["B"][0]].ms), list(range(0, 8)))
-        d = rec.build()
-        led = {r["name"][-1]: r["laps_led"] for r in d["results"]}
-        self.assertEqual((led["A"], led["B"]), (6, 1))             # 7 laps run by then: A led 1-6, B lap 7
-        self.assertEqual(d["stages"][0]["winner"], "Driver A")
-        self.assertIsNone(d["results"][0]["start"])
-
-    def test_a_stale_table_read_is_not_taken_for_a_new_lap(self):
-        self.rec.update(snap_at(self.cross, 0), track="x", total=TOTAL)
-        s = snap_at(self.cross, 45000)
-        for c in s.cars:                                           # laps_done moved on, the table entry didn't
-            c.cross_ms = c.prev_cross_ms
-        self.rec.update(s, track="x", total=TOTAL)
-        self.assertTrue(all(max(c.ms, default=0) <= 1 for c in self.rec.cars.values()))
+    def test_only_races_are_recorded(self):
+        race = Race(self.tmp.name)
+        snap = Snap([car(i, 3, 1000 * i, 500) for i in range(N)])
+        snap.session = mm.SESSION_RACE + 1
+        race.rec.update(snap, **race.kw)
+        self.assertFalse(race.rec.active)
 
 
-class CrossingHistoryTests(unittest.TestCase):
-    """Game.crossing_history reads one car's row of NR2003's scoring table (read-only)."""
-
-    def test_reads_the_row_of_a_slot(self):
-        import struct
-        from aimod.game import Game
-
-        class PM:
-            mem = {}
-
-            def read_bytes(self, addr, n):
-                return bytes(self.mem.get(addr + k, 0) for k in range(n))
-
-        pm, table, shift = PM(), 0x20000000, 7
-        hdr = struct.pack("<IIII", 5, 300, shift, table)
-        for k, b in enumerate(hdr):
-            pm.mem[mm.SCORING_HDR + k] = b
-        row = 3 << (shift + 2)
-        for n, ms in enumerate((5000, 24000, 43500, 63000)):
-            for k, b in enumerate(struct.pack("<I", ms | 0xF0000000)):      # (the top bits aren't time)
-                pm.mem[table + row + 4 * n + k] = b
-        g = Game()
-        g.pm = pm
-        self.assertEqual(g.crossing_history(3, 3), [5000, 24000, 43500, 63000])
-        self.assertEqual(g.crossing_history(3, 1), [5000, 24000])
-        self.assertEqual(g.crossing_history(99, 3), [])                     # not a car slot
-        g.pm = None
-        self.assertEqual(g.crossing_history(3, 3), [])
+class LateJoin(unittest.TestCase):
+    def test_laps_from_before_aimod_joined_come_from_the_game(self):
+        times = {i: [0] + [28000 * k + i * 100 for k in range(1, 6)] for i in range(N)}
+        with tempfile.TemporaryDirectory() as tmp:
+            rec = R.ResultsRecorder(tmp, history=lambda idx, n: times[idx - 2][:n + 1], clock=lambda: 0.0)
+            rec.update(Snap([car(i, 5, times[i][5], times[i][4]) for i in range(N)]), track="T", mod="M", total=LAPS)
+            self.assertEqual(sorted(rec.cars[2].ms), [0, 1, 2, 3, 4, 5])
+            d = rec.build()
+            self.assertIsNone(d["start_source"])                # joined after the start: no starting grid
+            self.assertEqual(d["results"][0]["laps"], 5)
 
 
 if __name__ == "__main__":

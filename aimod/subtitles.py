@@ -16,21 +16,27 @@ import random
 import re
 
 
-
 class _Blank(dict):
     def __missing__(self, key):
         return ""
 
 
-DEFAULTS = {"on": False, "x": None, "y": None, "opacity": 0.95, "size": 1.0,
-            "rivals": True,        # grudge / feud / wreck / retaliation calls
-            "moments": True,       # big calls from the car on TV
-            "convos": True,        # lines of the user's own conversations
-            "min_gap": 20,         # seconds between two boxes (lines of one situation don't count)
-            "convo_chance": 100}   # % of the time a moment that has a conversation plays it instead of its normal line
-GROUP_WINDOW = 25.0                # s: a situation's later lines still show if they come this soon after the last
-MOMENT_TRIGGERS = ("caution", "white", "checkered", "stage_end", "black_flag", "damage", "driver_win", "driver_lead",
-                   "driver_damage")
+DEFAULTS = {
+    "on": False,
+    "x": None,
+    "y": None,
+    "opacity": 0.95,
+    "size": 1.0,
+    "rivals": True,
+    "moments": True,
+    "convos": True,
+    "min_gap": 20,           # seconds between two boxes (lines of one group are not counted)
+    "convo_chance": 100,     # % of the matching moments a conversation plays
+}
+GROUP_WINDOW = 25.0          # seconds a group's lines keep the box up after its last line
+MOMENT_TRIGGERS = ("caution", "white", "checkered", "stage_end", "black_flag", "damage", "driver_win",
+                   "driver_lead", "driver_damage")
+
 ROLE_WORDS = {"driver": "driver", "d": "driver", "crew": "crew", "crew chief": "crew", "chief": "crew", "c": "crew",
               "spotter": "spotter", "s": "spotter"}
 
@@ -51,7 +57,7 @@ class SubtitleGate:
         why = sub.get("why")
         if why == "rival" and not c.get("rivals", True):
             return False
-        if why == "moment" and not (c.get("moments", True) and sub.get("tv")):
+        if why == "moment" and (not c.get("moments", True) or not sub.get("tv")):
             return False
         if why == "convo" and not c.get("convos", True):
             return False
@@ -59,7 +65,7 @@ class SubtitleGate:
             return False
         group = sub.get("group")
         if group is not None and group == self.group and now - self.group_at <= GROUP_WINDOW:
-            self.group_at = now                       # the same situation: every line of it shows
+            self.group_at = now                  # the rest of a situation's lines ride on the first one's box
             return True
         if now - self.shown_at < float(c.get("min_gap", 20)):
             return False
@@ -71,8 +77,12 @@ def title_for(role: str, name: str = "") -> str:
     """what the box's small heading says: the driver's name when a driver speaks, else just the job"""
     if role == "driver":
         name = (name or "").strip()
-        return f"{name.upper()} - DRIVER" if name else "DRIVER"
-    return "SPOTTER" if role == "spotter" else "CREW CHIEF"
+        if name:
+            return f"{name.upper()} - DRIVER"
+        return "DRIVER"
+    if role == "spotter":
+        return "SPOTTER"
+    return "CREW CHIEF"
 
 
 def parse_script(text: str) -> tuple[list[tuple[str, str]], list[str]]:

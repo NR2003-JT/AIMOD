@@ -51,7 +51,7 @@ from .webserver import BoardServer, lan_ip
 from .brand import set_window_icon
 from .widget_html import WIDGET_FILE, WIDGET_HTML
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 TICK_MS = 150
 ATTACH_RETRY_S = 2.0
 TRACK_CHECK_S = 1.0
@@ -926,10 +926,10 @@ class App:
         c = ttk.Checkbutton(af, text="Clear AI black flags", variable=self.var_noblack,
                             command=lambda: self.settings.update(clear_black_flags=self.var_noblack.get()))
         c.grid(row=1, column=1, sticky="w", padx=(12, 0))
-        Tooltip(c, "In a race, any penalty rule's black flag on an AI car is wiped from the game's memory the "
-                   "moment it shows, so no car is called to pit road to serve one (restart passing, "
-                   "double-file lines, speeding on pit road...). Your own car is never touched. Cars the "
-                   "game limps in for repairs or a tow are not penalties and still come in.")
+        Tooltip(c, "In a race, any penalty rule's black flag on an AI car is wiped from the game's memory the moment "
+                   "it shows, so no car is called to pit road to serve one (restart passing, double-file lines, "
+                   "speeding on pit road...). Your own car is never touched. Cars the game limps in for repairs or "
+                   "a tow are not penalties and still come in.")
         self.var_gate = tk.BooleanVar(value=bool(self.settings.get("pit_gate", True)))
         c = ttk.Checkbutton(af, text="Pit gate: only AIMOD sends cars to pit road", variable=self.var_gate,
                             command=lambda: self.settings.update(pit_gate=self.var_gate.get()))
@@ -1066,10 +1066,9 @@ class App:
         c.pack(side="right", padx=(0, 10))
         Tooltip(c, "When a race ends, saves its results to the results folder as an .html page and a .json file: "
                    "finishing order with points, stage results and points, laps led, fastest lap, average running "
-                   "position, pit stops, places gained, cautions and lead changes. Read-only: worked out from "
-                   "the game's lap crossings. Points are NASCAR's scale and unofficial; the start position is "
-                   "the running order at the first green flag, so it's blank if AIMOD joined a race already "
-                   "running.")
+                   "position, pit stops, places gained, cautions and lead changes. Read-only: worked out from the "
+                   "game's lap crossings. Points are NASCAR's scale and unofficial; the start position is the "
+                   "running order at the first green flag, so it's blank if AIMOD joined a race already running.")
         self.pit_table = ColorTable(pl, [], hover=self._pit_hover, sortable=True)
         self.pit_table.on_resize = lambda w: self.settings.setdefault("pit_widths", {}).update(w)
         self.pit_table.pack(fill="both", expand=True)
@@ -1529,7 +1528,6 @@ class App:
         pending = self.game.rules_pending() if snap.session == mm.SESSION_RACE else set()
         if (self.settings.get("clear_black_flags", False) and snap.session == mm.SESSION_RACE
                 and self.game.write_enabled):
-            # no black flags for the AI: wipe the penalty before the car turns for pit road
             ai = {c.idx for c in snap.cars if c.valid and c.idx not in (mm.PLAYER_SLOT, mm.PACE_SLOT)}
             todo = (self.game.black_flags() | pending) & ai
             if todo:
@@ -1631,13 +1629,13 @@ class App:
             log.info("#%s %s: pit request withdrawn before pit road", ev.number, ev.name)
         self.pitlog.retry()                      # rows held back while the CSV was locked (open in Excel)
         if self.settings.get("save_results", True):
-            try:                                 # read-only: the race results file, written when the race is over
+            try:                                 # read-only: the results file must never stop the strategy tick
                 self.results.update(
-                    snap, track=self.track, mod=self.mod, total=max(snap.laps_total, self.engine.ot_total or 0),
-                    ot_pending=self.engine.ot_pending, stage_ends=self.engine.stage_list,
-                    cautions=self.engine.cautions, caution_laps=sum(self.engine.caution_lens),
-                    stops=self.pit_events)
-            except Exception:                    # the results must never stop the strategy tick
+                    snap, track=self.track, mod=self.mod,
+                    total=max(snap.laps_total, self.engine.ot_total or 0), ot_pending=self.engine.ot_pending,
+                    stage_ends=self.engine.stage_list, cautions=self.engine.cautions,
+                    caution_laps=sum(self.engine.caution_lens), stops=self.pit_events)
+            except Exception:
                 if now - getattr(self, "_results_error", 0.0) > 60:
                     self._results_error = now
                     log.exception("Race results failed (repeats are logged once a minute)")
@@ -1858,13 +1856,14 @@ class App:
             self._agg_summary(f"stage {self._agg_stage}")
         self._agg_stage = stage
         w.apply(pm, out.targets, shadow=(mode == agg.SHADOW))
-        scales = {}
-        if mode == agg.ON and p.agg_side_pad < 100:      # cars being pushed leave less room beside other cars
+        scales = {}                                           # the side room of the cars being pushed (not shadow)
+        if mode == agg.ON and p.agg_side_pad < 100:
             k = p.agg_side_pad / 100.0
             for idx, st in self.intensity.state.items():
                 own = w.orig.get(idx)
-                if st.target is not None and own is not None and st.target > own + 0.05:
-                    scales[idx] = k
+                if st.target is None or own is None or not st.target > own + 0.05:
+                    continue
+                scales[idx] = k
         w.apply_side(pm, scales, shadow=(mode == agg.SHADOW))
         if p.rivals_on:
             self._update_rival_onscreen(pm, snap.cars)
@@ -2961,7 +2960,7 @@ class App:
     def clear_session(self, why: str = "cleared by hand"):
         """Forget everything about the previous race: strategy state, pit log, pit board, monitor."""
         log.info("New session (%s) - AIMOD data cleared", why)
-        self.results.finish(why)                  # the race that just ended (before its data is cleared)
+        self.results.finish(why)
         self._restore_chassis()
         self._behavior_restore()
 

@@ -6,13 +6,12 @@ from __future__ import annotations
 
 import time
 
-from .radio_overlay import (FADE_IN, FADE_OUT, Image, ImageDraw, ImageFont, TalkIndicator, _font, _number_card,
-                            u32)
+from .radio_overlay import FADE_IN, FADE_OUT, Image, ImageDraw, ImageFont, TalkIndicator, _font, _number_card, u32
 
-BASE_H = 76                        # px at size 1.0 (the whole box; two lines of text)
-MAX_TEXT_W = 700                   # px at size 1.0
-MIN_READ_S, READ_PER_CHAR = 2.2, 0.06   # stays up at least this long: a floor, plus time per character
-LINGER = 0.9                       # s after the voice stops
+BASE_H = 76                       # px at size 1.0
+MAX_TEXT_W = 700                  # px of text at size 1.0 before it wraps
+MIN_READ_S, READ_PER_CHAR = 2.2, 0.06     # the box stays up at least this long after the line starts: base + per character
+LINGER = 0.9                      # s after the last word
 SAMPLE = (24, "KYLE LARSON - DRIVER", "Tight in the middle, I need some help on the next stop.")
 
 
@@ -21,7 +20,7 @@ def _italic(size: int):
         try:
             return ImageFont.truetype(name, size)
         except OSError:
-            continue
+            pass
     return _font(size)
 
 
@@ -69,12 +68,11 @@ def build_bug(number, title: str, text: str, size: float, artdata=None) -> "Imag
     W = card_w + bar_w
     img = Image.new("RGBA", (W, h), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    d.polygon([(card_w, 0), (W, 0), (W - slant, h), (card_w - slant, h)], fill=(8, 9, 12, 238))   # the bar
-    # the number card, cut to a parallelogram
+    d.polygon([(card_w, 0), (W, 0), (W - slant, h), (card_w - slant, h)], fill=(8, 9, 12, 238))
     art = artdata is not None and number is not None and artdata.abs_path(artdata.rel_number(number))
-    if art:                                              # the active art's number card
+    if art:
         card = _number_card(number, h, artdata).resize((card_w, h), Image.LANCZOS)
-    else:                                                # no art: a plain plate in the car's colour, the number big
+    else:
         color = (artdata.color(number) if artdata is not None and number is not None else None) or "#26335f"
         card = Image.new("RGBA", (card_w, h), color)
         r, g, b = (int(color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
@@ -99,9 +97,9 @@ class SubtitleBug(TalkIndicator):
     def __init__(self, root, radio, artdata=None, on_moved=None):
         self.root, self.radio, self.artdata, self.on_moved = root, radio, artdata, on_moved
         self.cfg = radio.cfg["subtitles"]
-        if self.cfg.get("x") is None or self.cfg.get("y") is None:      # low and left of centre, like on TV
+        if self.cfg.get("x") is None or self.cfg.get("y") is None:
             sw, sh = u32.GetSystemMetrics(0), u32.GetSystemMetrics(1)
-            self.cfg["x"], self.cfg["y"] = int(sw * 0.14), int(sh * 0.80)
+            self.cfg["x"], self.cfg["y"] = int(sw * 0.14), int(sh * 0.8)
         self.win = None
         self.img = None
         self.key = None

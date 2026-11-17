@@ -202,8 +202,8 @@ class AggressionWriter:
         self.mean: dict[int, float] = {}         # slot -> the .car mean (car + 0x16EE), for the log
         self.ours: set[int] = set()              # slots holding a value we wrote
         self.shadow_val: dict[int, float] = {}   # SHADOW: what each car would hold
-        self.side_nat: dict[int, float] = {}     # slot -> the game's own side-padding base (car + 0x1BEA)
-        self.side_w: dict[int, float] = {}       # slot -> the scaled value we left there
+        self.side_nat: dict[int, float] = {}     # slot -> his own side-room base (car + OFF_SIDE_BASE)
+        self.side_w: dict[int, float] = {}       # slot -> the side-room value we left there
         self.session: tuple = ()
         self.pid = None
 
@@ -359,8 +359,7 @@ class AggressionWriter:
             self._save()
         return changes
 
-    # ------------------------------------------------------- side padding
-    SIDE_OK = (0.05, 5.0)        # the base we know is 0.7 / 1.0 / 1.5; anything else is left alone
+    SIDE_OK = (0.05, 5.0)        # a side-room base outside this is not one we understand: left alone
 
     @staticmethod
     def _side_addr(slot: int) -> int:
@@ -379,12 +378,12 @@ class AggressionWriter:
         nat = self.side_nat.get(slot)
         if pm is None or w is None or nat is None:
             return
-        cur = self._side_read(pm, slot)
-        if cur is not None and abs(cur - w) <= AGG_EPS:
-            try:
+        try:
+            cur = self._side_read(pm, slot)
+            if cur is not None and abs(cur - w) <= AGG_EPS:
                 pm.write_bytes(self._side_addr(slot), struct.pack("<f", nat), 4)
-            except Exception:
-                pass
+        except Exception:
+            return
 
     def apply_side(self, pm, scales: dict[int, float], shadow: bool = False) -> int:
         """scales: slot -> scale of his own side-padding base (< 1 = leaves less room beside other cars). Captured
@@ -394,24 +393,24 @@ class AggressionWriter:
             return 0
         n = 0
         for s in sorted(self.orig):
-            scale = scales.get(s, 1.0) if s not in self.held else 1.0
-            if scale >= 1.0 or not math.isfinite(scale):
-                self._side_put_back(pm, s)
-                continue
-            cur = self._side_read(pm, s)
-            if cur is None or not (self.SIDE_OK[0] < cur < self.SIDE_OK[1]):
-                continue
-            w = self.side_w.get(s)
-            if w is None or abs(cur - w) > AGG_EPS:
-                self.side_nat[s] = cur
-            val = _f32(max(0.0, scale) * self.side_nat[s])
-            if abs(cur - val) > 1e-7:
-                try:
-                    pm.write_bytes(self._side_addr(s), struct.pack("<f", val), 4)
-                except Exception:
+            try:
+                scale = scales.get(s, 1.0) if s not in self.held else 1.0
+                if scale >= 1.0 or not math.isfinite(scale):
+                    self._side_put_back(pm, s)
                     continue
-            self.side_w[s] = val
-            n += 1
+                cur = self._side_read(pm, s)
+                if cur is None or not (self.SIDE_OK[0] < cur < self.SIDE_OK[1]):
+                    continue
+                w = self.side_w.get(s)
+                if w is None or abs(cur - w) > AGG_EPS:
+                    self.side_nat[s] = cur
+                val = _f32(max(0.0, scale) * self.side_nat[s])
+                if abs(cur - val) > 1e-7:
+                    pm.write_bytes(self._side_addr(s), struct.pack("<f", val), 4)
+                self.side_w[s] = val
+                n += 1
+            except Exception:
+                continue
         return n
 
     def restore(self, pm) -> int:

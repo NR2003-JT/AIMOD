@@ -76,7 +76,7 @@ class Preset:
     behavior_teams: bool = True     # teammates don't fight; drafting packs save / push with their team or make
     agg_mode: str = "off"           # racing intensity & rivals: off | shadow (log only) | on
     agg_strength: int = 70          # % of the intensity changes (0 = the game's own values, 150 max)
-    agg_side_pad: int = 70          # % of his own side room a car keeps while he is in a battle / going at a rival (100 = off)
+    agg_side_pad: int = 70          # % of his own side room a driver keeps in a battle (100 = off, 30 min)
     rivals_on: bool = True          # rivals from run-ins: grudges, feuds that escalate, retaliation (with agg_mode)
     rivals_list: bool = True        # + the pairs in app\rivals.txt
     rivals_teammates: bool = True   # teammates can become rivals too

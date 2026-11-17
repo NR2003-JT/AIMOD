@@ -305,8 +305,8 @@ class Game:
         return snap
 
     def crossing_history(self, idx: int, laps: int) -> list[int]:
-        """Game ms at which car slot `idx` completed laps 0..laps, from NR2003's scoring table (entry n = lap n;
-        entry 0 is the start). Empty when the table can't be read. Read-only."""
+        """The line-crossing times (ms) NR2003 has stored for car idx, indexed by lap number (0..laps), or []. Used by
+        the race results to fill in laps from before AIMOD joined the race."""
         pm = self.pm
         try:
             _n, laps_cap, shift, table = struct.unpack("<IIII", pm.read_bytes(mm.SCORING_HDR, 16))
@@ -427,13 +427,13 @@ class Game:
         return out
 
     def clear_penalties(self, slots) -> int:
-        """Wipe every penalty rule's state for these car slots: the black flag bit and the "owed" nibble. The higher
-        bits (served / history) stay. Returns how many rule entries changed."""
+        """Wipe the black flag (bit 16) and the "wants this car to pit" state (low 4 bits) of these car slots in every
+        penalty rule, so the game never calls them in to serve a penalty. Returns how many values were changed."""
         n = 0
         if not self.write_enabled or self.pm is None:
             return 0
-        keep = ~(mm.PENALTY_BLACK_BIT | 0xF) & 0xFFFFFFFF
         try:
+            keep = ~(mm.PENALTY_BLACK_BIT | 15) & 0xFFFFFFFF
             mgr = self.pm.read_uint(mm.PENALTY_MGR)
             arr, cnt = self.pm.read_uint(mgr + 4), self.pm.read_int(mgr + 8)
             for k in range(min(max(cnt, 0), 64)):
@@ -443,9 +443,11 @@ class Game:
                 for i in slots:
                     addr = rule + 4 + i * 4
                     v = self.pm.read_uint(addr)
-                    if v & ~keep & 0xFFFFFFFF:
-                        self.pm.write_bytes(addr, struct.pack("<I", v & keep), 4)
-                        n += 1
+                    if not (v & ~keep & 0xFFFFFFFF):
+                        continue
+                    self.pm.write_bytes(addr, struct.pack("<I", v & keep), 4)
+                    n += 1
+            return n
         except Exception as e:
             log.debug("clear penalties failed: %s", e)
         return n

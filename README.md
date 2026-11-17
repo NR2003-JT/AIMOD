@@ -27,6 +27,10 @@ come from). Questions and bug reports are welcome in the issue tracker.
 - **Pit strategy per car.** Green-flag stops planned from each car's real fuel mileage and tire wear;
   short-pit / split / stretch stints; undercut and overcut reactions; team and manufacturer plans
   (including superspeedway blocks).
+- **Fuel range options.** *Tank range extension* stretches the tank range used to decide whether a car can
+  make the finish with one more stop; *Fuel pit level* sets how low a car runs before a fuel stop; *Aggressive
+  green-flag fuel* (off by default) lets cars on good tires run the tank lower, between two levels you set.
+  None of them change real fuel use.
 - **Cautions.** Every caution call is AIMOD's: fuel, tires against track position, laps to go, the free
   pass and wave around, stage breaks, overtime (green-white-checkered). The game's own stop requests
   are called off when the car doesn't need the stop; penalties, heavy damage and an empty tank still
@@ -39,9 +43,13 @@ come from). Questions and bug reports are welcome in the issue tracker.
 - **Driver behavior and rivals (beta, off by default).** AI drivers save fuel or tires, push late in a
   stage, and race harder when it matters (late in a stage, for the lead, against a rival). Rivals are pairs
   you set, or grudges that build from run-ins during the race. This works through each driver's
-  aggression value in memory, and a driver in a battle also keeps less room beside other cars (the "Side room"
-  setting, 70% by default, 100% = off). It gives closer side-by-side racing, but it doesn't reliably cause
-  deliberate contact yet.
+  aggression value in memory; it gives closer racing, but it doesn't reliably cause deliberate contact yet.
+  *Racing intensity* has an off / shadow (log only) / on mode and a strength setting, and a *side room* setting
+  (70% by default, 100% = off): a driver in a battle keeps only part of his own room beside other cars, so side by
+  side racing gets closer; every car goes back to his own values when the battle ends, the mode changes or AIMOD
+  closes.
+- **Clear AI black flags** (off by default). In a race, any penalty rule's black flag on an AI car is wiped from
+  the game's memory the moment it shows, so no AI car is called in to serve one. Your car is never touched.
 - **Pit crew and gearbox options** (memory only, game files are never changed): modern one-lug pit
   crews with faster fuel flow, and the game's own 5/6-speed gearbox for mods that want it.
 - **Sound sets per series.** Pick a series and a loose-WAV sound set, press Apply with NR2003 closed. AIMOD backs up
@@ -52,18 +60,19 @@ come from). Questions and bug reports are welcome in the issue tracker.
   into a cache copy (the download is never changed), and files that can't be fixed are left out.
 - **Race scanner.** Spoken team radio for one car or the whole field, with an on-screen card for the car
   that's talking; custom lines (rival and grudge calls included); optional phone playback.
-- **Subtitle box.** Optional TV-style box (number card from your art, the driver's name or SPOTTER / CREW CHIEF, and
-  exactly what is said) for the calls that matter: rivalries and grudges, big moments on the TV car, and your own
-  conversations. Everything else keeps the plain number card. Switch each kind on or off and set how often.
-- **Radio conversations.** Write short back-and-forths between a driver and his spotter or crew chief
-  (Scanner tab > Conversations); they play in place of a moment's normal line, each speaker in his own voice.
+- **Subtitle box and radio conversations.** An optional TV-style box over the game (number card, who is speaking,
+  exactly what is said) for a few special calls: rivalries and grudges, big moments on the TV car, and your own
+  scripted conversations; everything else keeps the plain number card. Write short back-and-forths between a
+  driver, his crew chief and his spotter for any radio moment (Scanner tab > Conversations); each line plays in its
+  own voice, one after another, in place of the moment's normal line.
 - **Pit board and logs.** In-game pit board (windowed/borderless NR2003), a web/OBS widget, a CSV pit log
   per session and `aimod.log`.
 - **Race results.** When a race ends, AIMOD saves an `.html` page and a `.json` file to its `results` folder:
   finishing order with points, stage results and stage points, laps led, fastest lap, average running position,
   pit stops, places gained, cautions and lead changes. It reads the game's lap crossings (nothing is written to
-  the game), so it also works when you spectate. Points follow NASCAR's 2026 Chase scale (55 for a win, stage points, a fastest-lap point) and are unofficial; the start position
-  is the running order at the first green flag. Turn it off with "Save race results" on the Pit log tab.
+  the game), so it also works when you spectate. Points follow NASCAR's 2026 Chase scale (55 for a win, stage
+  points, a fastest-lap point) and are unofficial; the start position is the running order at the first green flag.
+  Turn it off with *Save race results* on the Pit log tab; *Open results folder* is next to it.
 - **Works alone.** RaceControl (cautions, wave arounds, stages) and a companion overlay app are optional;
   AIMOD reads their files when they are there.
 
@@ -113,6 +122,8 @@ finish. Tests that read an installed NR2003 skip themselves when it isn't there.
 | `aimod/soundsets.py`, `sound_sets/` | Per-mod loose WAV sets and reversible file staging |
 | `aimod/tiremodel.py`, `aimod/pace.py` | Learned tire falloff and pace per track |
 | `aimod/behavior.py`, `aimod/aggression.py` | Driver behavior, racing intensity and rivals |
+| `aimod/results.py` | Race results (`.json` + `.html`) from the game's lap crossings |
+| `aimod/subtitles.py`, `aimod/subtitle_overlay.py` | When the subtitle box shows, radio conversations, and the box itself |
 | `aimod/carfiles.py`, `aimod/carno.py` | `.car` files (teams, crew ratings) and car numbers ("01" is stored as 2001) |
 | `tests/` | Unit tests and the race simulator |
 | `tools/` | Live probes used to find and confirm memory addresses (`--fake` runs them against a fake game) |
