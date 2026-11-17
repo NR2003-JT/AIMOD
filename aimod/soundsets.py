@@ -106,7 +106,7 @@ def write_wav(path: Path, channels: int, rate: int, pcm: bytes):
         w.writeframes(pcm)
 
 
-def normalize(src: Path, dest: Path) -> str | None:
+def normalize(src: Path, dest: Path, want: int | None = None) -> str | None:
     """Rewrite src as a clean 16-bit PCM WAV at dest (drops extra RIFF chunks, widens 8-bit).
 
     Returns a note for something that was converted, raises SoundSetError for what can't be fixed
@@ -122,7 +122,7 @@ def normalize(src: Path, dest: Path) -> str | None:
         raise SoundSetError(f"{src.name}: {bits}-bit is not supported")
     if rate != RATE:
         raise SoundSetError(f"{src.name}: {rate} Hz (needs {RATE} Hz; resample it first)")
-    want = expected_channels(src.name)
+    want = want or expected_channels(src.name)
     if ch == 2 and want == 1:
         n = len(pcm) // 4
         vals = struct.unpack(f"<{n * 2}h", pcm[: n * 4])
@@ -195,6 +195,7 @@ class SoundSetManager:
         self.user_root = self.app_dir / "sound_sets"
         self.bundled_root = bundled_root if bundled_root is not None else _bundled_root()
         self._running = running
+        self.notes: list[str] = []
 
     def _roots(self) -> tuple[Path, Path]:
         return self.user_root, self.bundled_root
@@ -286,19 +287,35 @@ class SoundSetManager:
         return {"active": m.get("active", ORIGINAL), "written": sorted(m.get("written", {}))}
 
     def validate(self, name: str, game_dir: str) -> dict[str, Path]:
-        """Resolve and check every file of the set; raises SoundSetError listing all problems."""
+        """Resolve and check every file of the set. A file that is only the wrong format (8-bit, stereo where the game
+        has mono) is converted into app/sound_sets/.converted/<set>/ and that copy is used; the downloaded folder
+        is never changed. A file that can't be fixed (wrong rate, empty, unreadable) is left out, so the game keeps its
+        original for it. Notes about both are in self.notes. Raises SoundSetError if nothing usable is left."""
         files = self.resolve(name)
         root, backup, _ = self._paths(game_dir)
-        problems = []
+        cache = self.user_root / ".converted" / _safe_name(name)
+        self.notes = []
+        out: dict[str, Path] = {}
         for fn, src in files.items():
             stock = backup / fn if (backup / fn).is_file() else (root / fn if (root / fn).is_file() else None)
+            want = expected_channels(fn, stock)
             try:
-                check_wav(src, expected_channels(fn, stock))
+                check_wav(src, want)
+                out[fn] = src
+                continue
+            except SoundSetError:
+                pass
+            try:
+                cache.mkdir(parents=True, exist_ok=True)
+                note = normalize(src, cache / fn, want)
+                check_wav(cache / fn, want)
+                out[fn] = cache / fn
+                self.notes.append(note or f"{fn}: converted")
             except SoundSetError as e:
-                problems.append(str(e))
-        if problems:
-            raise SoundSetError(f"Sound set '{name}' was not applied:\n" + "\n".join(problems))
-        return files
+                self.notes.append(f"left out {e}")
+        if not out:
+            raise SoundSetError(f"Sound set '{name}' was not applied: no usable WAV files.\n" + "\n".join(self.notes))
+        return out
 
     def apply(self, game_dir: str, name: str) -> str:
         if self._running():
@@ -362,7 +379,10 @@ class SoundSetManager:
         _write_json(manifest_path, {"active": name, "written": written})
         if name == ORIGINAL:
             return "Original sounds restored. Start NR2003 to load them."
-        return f"'{name}' applied ({len(files)} files). Start NR2003 to load it."
+        extra = f" {len(self.notes)} file(s) converted or left out (see aimod.log)." if self.notes else ""
+        for n in self.notes:
+            log.info("Sound set '%s': %s", name, n)
+        return f"'{name}' applied ({len(files)} files).{extra} Start NR2003 to load it."
 
     def restore(self, game_dir: str) -> str:
         return self.apply(game_dir, ORIGINAL)

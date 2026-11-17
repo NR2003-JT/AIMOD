@@ -45,7 +45,9 @@ come from). Questions and bug reports are welcome in the issue tracker.
 - **Sound sets per series.** Pick a series and a loose-WAV sound set, press Apply with NR2003 closed. AIMOD backs up
   the game's loose sounds first, checks every WAV (PCM, 22050 Hz, 16-bit, right channel count), layers partial sets
   over the originals and only ever touches files it wrote. Restore puts the originals back. Add your own sound
-  packs from a folder (none are bundled except NASCARMASTER's open-wheel crash sounds).
+  packs from a folder (none are bundled except NASCARMASTER's open-wheel crash sounds). A downloaded pack can be
+  dropped straight into `sound_sets`: on Apply, 8-bit files and stereo files where the game wants mono are converted
+  into a cache copy (the download is never changed), and files that can't be fixed are left out.
 - **Race scanner.** Spoken team radio for one car or the whole field, with an on-screen card for the car
   that's talking; custom lines (rival and grudge calls included); optional phone playback.
 - **Subtitle box.** Optional TV-style box (number card from your art, the driver's name or SPOTTER / CREW CHIEF, and

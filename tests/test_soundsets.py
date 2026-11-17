@@ -126,34 +126,45 @@ class TestApply(Base):
             self.m.apply(str(self.game), "one")
         self.assertFalse((self.snd / ss.BACKUP_DIR).exists())
 
-    def test_invalid_wav_writes_nothing(self):
-        self.mkset("bad", {"skid.wav": dict(fill=5), "hit_hard.wav": dict(bits=8)})
-        with self.assertRaises(ss.SoundSetError) as cm:
-            self.m.apply(str(self.game), "bad")
-        self.assertIn("8-bit", str(cm.exception))
-        self.assertEqual(self.data("skid.wav"), bytes([1]))
-        self.assertFalse((self.snd / ss.MANIFEST).exists())
+    def test_fixable_files_are_converted_not_refused(self):
+        # 8-bit and stereo-where-mono are repaired into a cache copy; the downloaded folder stays as it was
+        self.mkset("dl", {"skid.wav": dict(fill=130, bits=8), "hit_hard.wav": dict(channels=2, fill=5)})
+        msg = self.m.apply(str(self.game), "dl")
+        self.assertIn("2 file(s) converted", msg)
+        for fn in ("skid.wav", "hit_hard.wav"):
+            ss.check_wav(self.snd / fn, 1)
+        with wave.open(str(self.m.user_root / "dl" / "skid.wav")) as w:
+            self.assertEqual(w.getsampwidth(), 1)             # source untouched
+        with wave.open(str(self.m.user_root / "dl" / "hit_hard.wav")) as w:
+            self.assertEqual(w.getnchannels(), 2)
 
-    def test_channel_and_rate_and_empty_rejected(self):
-        for kw in (dict(channels=2), dict(rate=44100), dict(frames=0)):
+    def test_unfixable_file_left_out_rest_applied(self):
+        self.mkset("dl", {"skid.wav": dict(fill=5), "hit_hard.wav": dict(rate=44100)})
+        msg = self.m.apply(str(self.game), "dl")
+        self.assertIn("left out", " ".join(self.m.notes))
+        self.assertEqual(self.data("skid.wav"), bytes([5]))
+        self.assertEqual(self.data("hit_hard.wav"), bytes([1]))   # the game keeps its original
+
+    def test_nothing_usable_writes_nothing(self):
+        for kw in (dict(rate=44100), dict(frames=0)):
             self.mkset("x", {"skid.wav": kw})
             with self.assertRaises(ss.SoundSetError, msg=str(kw)):
                 self.m.apply(str(self.game), "x")
             (self.m.user_root / "x" / "skid.wav").unlink()
+        self.assertEqual(self.data("skid.wav"), bytes([1]))
+        self.assertFalse((self.snd / ss.MANIFEST).exists())
 
-    def test_stereo_file_must_be_stereo(self):
-        self.mkset("x", {"winston_idle.wav": dict(channels=1)})
+    def test_converted_cache_is_not_listed_as_a_set(self):
+        self.mkset("dl", {"skid.wav": dict(bits=8, fill=130)})
+        self.m.apply(str(self.game), "dl")
+        self.assertEqual(self.m.names(), [ss.ORIGINAL, "dl"])
+
+    def test_stereo_file_where_stock_is_stereo(self):
+        self.mkset("x", {"winston_idle.wav": dict(channels=1)})      # mono where stock is stereo: can't be fixed
         with self.assertRaises(ss.SoundSetError):
             self.m.apply(str(self.game), "x")
         self.mkset("y", {"winston_idle.wav": dict(channels=2, fill=7)})
         self.m.apply(str(self.game), "y")
-
-    def test_missing_stock_file_restored_from_backup(self):
-        self.mkset("one", {"skid.wav": {}})
-        self.m.apply(str(self.game), "one")
-        (self.snd / "winnf_idle.wav").unlink()                   # something removed it
-        self.m.apply(str(self.game), "one")
-        self.assertTrue((self.snd / "winnf_idle.wav").is_file())
 
 
 class TestImport(Base):
