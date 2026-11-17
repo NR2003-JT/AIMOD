@@ -1,3 +1,5 @@
+<p align="center"><img src="art/brand/aimod_logo.png" alt="AIMOD" height="240"></p>
+
 # AIMOD
 
 AI pit strategy for **NASCAR Racing 2003 Season**. AIMOD takes over the AI cars' pit decisions while

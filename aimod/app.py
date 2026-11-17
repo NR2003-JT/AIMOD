@@ -48,6 +48,7 @@ from .wavelog import WaveLog
 from .table import Column, ColorTable, Row
 from .teams import RulesDialog, TeamsDialog, normalize as normalize_teams
 from .webserver import BoardServer, lan_ip
+from .brand import set_window_icon
 from .widget_html import WIDGET_FILE, WIDGET_HTML
 
 VERSION = "2.1.0"
@@ -371,6 +372,7 @@ class App:
 
         self.root = tk.Tk()
         self.root.title(f"AIMOD v{VERSION} - NR2003 AI Pit Strategy")
+        set_window_icon(self.root)
         self.root.geometry(self.settings.get("geometry", "1440x820"))
         self.root.configure(bg=BG)
         self.root.minsize(1100, 600)

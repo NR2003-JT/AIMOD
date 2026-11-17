@@ -28,6 +28,7 @@ import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .brand import brand_file
 from .dashboard_html import DASHBOARD_HTML
 from .widget_html import WIDGET_HTML
 
@@ -143,6 +144,9 @@ class BoardServer:
                     self._send(200, body, "application/json")
                 elif path == "/overlay":
                     self._send(200, WIDGET_HTML.encode("utf-8"), "text/html; charset=utf-8")
+                elif path == "/favicon.ico" and brand_file("aimod.ico"):
+                    with open(brand_file("aimod.ico"), "rb") as f:
+                        self._send(200, f.read(), "image/x-icon")
                 elif path in ("", "/live", "/index.html"):
                     self._send(200, DASHBOARD_HTML.encode("utf-8"), "text/html; charset=utf-8")
                 elif path.startswith("/asset/") and server.artdata is not None:

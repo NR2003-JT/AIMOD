@@ -6,6 +6,8 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
+        ('../../art/brand/aimod.ico', 'art/brand'),
+        ('../../art/brand/aimod_icon.png', 'art/brand'),
         ('../../sound_sets/NASCARMASTER Open Wheel Onboard Crashes/hit_hard.wav',
          'sound_sets/NASCARMASTER Open Wheel Onboard Crashes'),
         ('../../sound_sets/NASCARMASTER Open Wheel Onboard Crashes/hit_med.wav',
@@ -50,5 +52,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='../../art/brand/aimod.ico',
     uac_admin=True,
 )
