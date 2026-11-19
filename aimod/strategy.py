@@ -1051,10 +1051,10 @@ class StrategyEngine:
                 threat = 0.6 if gain is None else clamp(min(early, 3) * gain / max(0.2, d))
                 if threat > 0.05:
                     behind += threat
-                    who = who or number
+                    who = number if who is None else who
             elif -span <= d < 0:
                 ahead += 1
-                who = who or number
+                who = number if who is None else who
         if not (behind or ahead):
             return
         field = max(10, len(self.cars))

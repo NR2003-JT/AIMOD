@@ -29,6 +29,14 @@ SERIES_NAME_OFFSET = 0x20
 # +8 count. Each rule keeps a dword per car at rule+4+car*4; bit 16 = black flag shown.
 PENALTY_MGR = 0xBDB9D8
 PENALTY_BLACK_BIT = 1 << 16
+# Rule names: each rule object holds its name at +0xC5 (char[0x18]), loaded from the exe's string table 0x52A6 + the
+# rule's list index at start-up (static initializers 0x41B8xx..0x41C0xx). Rule 6 = "Speeding in pits" (string 0x52AC,
+# objects 0x86E390 vtable 0x6ED1D0 and 0x86C160 vtable 0x6ED218); 11 = "Passing on the inside", 14 = "Passing under
+# yellow". Its per-car dword: low 4 bits = penalty type (4 = held for N s), bits 4..15 = N (0x1E4 = held 30 s).
+RULE_NAME_OFF = 0xC5
+RULE_NAME_LEN = 0x18
+PIT_SPEEDING_VTABLES = (0x6ED1D0, 0x6ED218)
+PIT_SPEEDING_NAME = "Speeding in pits"
 
 # Each rule's "wants this car to pit" check (rule vtable +0x30), as NR2003's green pit check 0x534F40 calls it:
 # function -> 0 = the car's state & 0xF is non-zero, n = it equals n. Rules whose check always says no are left out.

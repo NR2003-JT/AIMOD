@@ -253,7 +253,10 @@ class Game:
             if refresh_names or i not in self._names:
                 self._names[i] = self._driver(i)
             number, name = self._names[i]
-            if number <= 0 or name.lower() == "pace car":
+            # #0 is a real car number: only a blank driver entry (number 0, no name: _driver gives "AI") or a
+            # pace car numbered 0 is skipped
+            if (number < 0 or (number == 0 and (name == "AI" or i == mm.PACE_SLOT))
+                    or name.lower() == "pace car"):
                 cars.append(CarSnapshot(i, valid=False))
                 continue
             damage = (f(mm.OFF_DAMAGE_FRONT) + f(mm.OFF_DAMAGE_REAR)
@@ -451,6 +454,33 @@ class Game:
         except Exception as e:
             log.debug("clear penalties failed: %s", e)
         return n
+
+    def clear_pit_speeding(self, slots) -> set[int]:
+        """Wipe NR2003's "Speeding in pits" penalty (rule 6: held 30 s in the stall, and its black flag) from these car
+        slots. The rule is found by its vtable or its name, not its place in the list. Returns the slots cleared."""
+        out: set[int] = set()
+        if not self.write_enabled or self.pm is None or not slots:
+            return out
+        try:
+            mgr = self.pm.read_uint(mm.PENALTY_MGR)
+            arr, cnt = self.pm.read_uint(mgr + 4), self.pm.read_int(mgr + 8)
+            for k in range(min(max(cnt, 0), 64)):
+                rule = self.pm.read_uint(arr + 4 * k)
+                if not rule:
+                    continue
+                if self.pm.read_uint(rule) not in mm.PIT_SPEEDING_VTABLES and _cstr(
+                        self.pm.read_bytes(rule + mm.RULE_NAME_OFF, mm.RULE_NAME_LEN), 0,
+                        mm.RULE_NAME_LEN) != mm.PIT_SPEEDING_NAME:
+                    continue
+                for i in slots:
+                    addr = rule + 4 + i * 4
+                    v = self.pm.read_uint(addr)
+                    if v & (0xF | mm.PENALTY_BLACK_BIT):
+                        self.pm.write_bytes(addr, b"\0\0\0\0", 4)
+                        out.add(i)
+        except Exception as e:
+            log.debug("clear pit speeding failed: %s", e)
+        return out
 
     def make_name(self, make_id: int) -> str:
         names = self.make_names or mm.MAKE_NAMES

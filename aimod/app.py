@@ -930,6 +930,13 @@ class App:
                    "it shows, so no car is called to pit road to serve one (restart passing, double-file lines, "
                    "speeding on pit road...). Your own car is never touched. Cars the game limps in for repairs or "
                    "a tow are not penalties and still come in.")
+        self.var_nospeed = tk.BooleanVar(value=bool(self.settings.get("forgive_pit_speeding", True)))
+        c = ttk.Checkbutton(af, text="Forgive AI pit road speeding", variable=self.var_nospeed,
+                            command=lambda: self.settings.update(forgive_pit_speeding=self.var_nospeed.get()))
+        c.grid(row=2, column=1, sticky="w", padx=(12, 0))
+        Tooltip(c, "NR2003's AI often comes onto pit road too fast on green-flag stops and gets the game's "
+                   "'Speeding in pits' penalty: held 30 seconds in its stall. When on, AIMOD wipes that one penalty "
+                   "from AI cars the moment the game hands it out. Your own car is never touched.")
         self.var_gate = tk.BooleanVar(value=bool(self.settings.get("pit_gate", True)))
         c = ttk.Checkbutton(af, text="Pit gate: only AIMOD sends cars to pit road", variable=self.var_gate,
                             command=lambda: self.settings.update(pit_gate=self.var_gate.get()))
@@ -1525,6 +1532,16 @@ class App:
             log.info("FREE PASS (lap %d): #%s gets its lap back", lap, n)
         self.wavelog.new_free_pass.clear()
         team_of = self._team_of()
+        if (self.settings.get("forgive_pit_speeding", True) and snap.session == mm.SESSION_RACE
+                and self.game.write_enabled):
+            # NR2003's AI sails into pit road too fast on green-flag stops (every green stop at Daytona, 11-16
+            # report: "Speeding in pits", held 30 s): AI cars are let off; the player's car keeps the rule
+            ai = {c.idx for c in snap.cars if c.valid and c.idx not in (mm.PLAYER_SLOT, mm.PACE_SLOT)}
+            for idx in sorted(self.game.clear_pit_speeding(ai)):
+                c = next((c for c in snap.cars if c.idx == idx), None)
+                log.info("Pit road speeding penalty forgiven: #%s %s", c.number if c else idx, c.name if c else "")
+                flagged.discard(idx)
+                self._mem_flags = set(self._mem_flags) - {idx}
         pending = self.game.rules_pending() if snap.session == mm.SESSION_RACE else set()
         if (self.settings.get("clear_black_flags", False) and snap.session == mm.SESSION_RACE
                 and self.game.write_enabled):
@@ -1899,7 +1916,7 @@ class App:
 
     def _edit_rivals(self):
         from .rivals_ui import RivalsDialog
-        cars = [c for c in (self._last_snap.cars if self._last_snap else []) if c.valid and c.number > 0]
+        cars = [c for c in (self._last_snap.cars if self._last_snap else []) if c.valid and c.number >= 0]
         colors = {c.number: (self.artdata.color(c.number) or
                              {"chevrolet": "#c99a2e", "dodge": "#b3122e", "ford": "#1f4e9c",
                               "toyota": "#d7261e"}.get((c.make or "").lower(), "#3a3a3a")) for c in cars}
@@ -1956,7 +1973,7 @@ class App:
         from .behavior import Car
         pc = next((c for c in snap.cars if c.idx == mm.PLAYER_SLOT and c.valid), None)
         ps = self.engine.prog_state.get(mm.PLAYER_SLOT)
-        if pc is None or ps is None or pc.number <= 0:
+        if pc is None or ps is None or pc.number < 0:
             return None
         return Car(mm.PLAYER_SLOT, pc.number, pc.name, lap=pc.laps_done + 1, progress=ps[0] + ps[2] + ps[1],
                    on_track=not pc.on_pit_road and not pc.reason_out)

@@ -239,7 +239,7 @@ class ResultsRecorder:
         return sorted(clocks, key=key)
 
     def build(self) -> dict:
-        cars = {i: c for i, c in self.cars.items() if c.number > 0}
+        cars = {i: c for i, c in self.cars.items() if c.number >= 0}     # (#0 is a real car)
         clocks = {i: _Clock(c.ms) for i, c in cars.items()}
         fin = self._finish_ms()
         leader_laps = max((cl.laps[-1] for cl in clocks.values() if cl.laps), default=0)
